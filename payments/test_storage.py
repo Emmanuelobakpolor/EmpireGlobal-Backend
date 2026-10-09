@@ -1,6 +1,8 @@
 from unittest import mock
 
 from django.core.files.base import ContentFile
+from django.core.signals import request_finished
+from django.db import close_old_connections
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, override_settings
 
@@ -8,6 +10,16 @@ from accounts.models import User
 from core.storage import CloudinaryStorage
 
 from .tests import PDF, PNG, PaymentTestBase
+
+
+def release(response):
+    """Close a streamed file response so Windows unlocks the file. Closing a response normally ends
+    the request, which closes the database connection; on Postgres that would break the test."""
+    request_finished.disconnect(close_old_connections)
+    try:
+        response.close()
+    finally:
+        request_finished.connect(close_old_connections)
 
 
 class AvatarTests(PaymentTestBase):
@@ -26,7 +38,7 @@ class AvatarTests(PaymentTestBase):
         picture = client.get(url)
         self.assertEqual(picture.status_code, 200)
         self.assertEqual(b''.join(picture.streaming_content), PNG)
-        picture.close()
+        release(picture)
 
         first = User.objects.get(pk=self.customer.pk).avatar
         self.upload(client, name='new.png')
@@ -51,7 +63,7 @@ class AvatarTests(PaymentTestBase):
         url = self.upload(self.client_for(self.customer)).json()['user']['avatarUrl']
         picture = self.client_for(self.admin).get(url)
         self.assertEqual(picture.status_code, 200)
-        picture.close()
+        release(picture)
         self.assertEqual(self.client_for(self.other).get(url).status_code, 404)
         self.assertIn(self.client_for(None).get(url).status_code, (401, 403))
 

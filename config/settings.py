@@ -12,6 +12,10 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 
 import os
 from pathlib import Path
+from urllib.parse import urlparse
+
+import dj_database_url
+from django.core.exceptions import ImproperlyConfigured
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -27,7 +31,10 @@ SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'django-insecure-syr%)hkwa%6&(=
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DJANGO_DEBUG', 'true').lower() == 'true'
 
-ALLOWED_HOSTS = [h for h in os.environ.get('DJANGO_ALLOWED_HOSTS', '').split(',') if h]
+ALLOWED_HOSTS = [h.strip() for h in os.environ.get('DJANGO_ALLOWED_HOSTS', '').split(',') if h.strip()]
+# Render sets this to the service's own hostname (e.g. empire-global-api.onrender.com)
+if os.environ.get('RENDER_EXTERNAL_HOSTNAME'):
+    ALLOWED_HOSTS.append(os.environ['RENDER_EXTERNAL_HOSTNAME'])
 
 
 # Application definition
@@ -48,6 +55,8 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    # Serves Django admin's CSS/JS in production (there's no separate static file server)
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -79,12 +88,28 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+# SQLite locally; Postgres when DATABASE_URL is set (Render provides it)
+if os.environ.get('DATABASE_URL'):
+    DATABASES = {
+        'default': dj_database_url.config(conn_max_age=600, conn_health_checks=True),
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
+
+# Rate limits are counted in the cache. In production it lives in the database so every
+# gunicorn worker shares the same counts (create it with `manage.py createcachetable`).
+if os.environ.get('DATABASE_URL'):
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.db.DatabaseCache',
+            'LOCATION': 'django_cache',
+        },
+    }
 
 
 AUTH_USER_MODEL = 'accounts.User'
@@ -125,6 +150,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 # Uploaded files (payment receipts, application documents, display pictures). Never served
 # directly: receipts and documents are streamed to the owner or an admin by the API.
@@ -140,7 +166,8 @@ STORAGES = {
         else 'django.core.files.storage.FileSystemStorage',
     },
     'staticfiles': {
-        'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage',
+        'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage' if DEBUG
+        else 'whitenoise.storage.CompressedManifestStaticFilesStorage',
     },
 }
 DATA_UPLOAD_MAX_MEMORY_SIZE = 6 * 1024 * 1024
@@ -176,12 +203,22 @@ DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'Empire Global <no-rep
 # The React app talks to /api through the Vite dev proxy (same origin), so auth
 # uses Django's HttpOnly session cookie plus the csrftoken cookie.
 
+# In production the React app is on Vercel, which forwards /api/* to this server (see vercel.json),
+# so the browser still sees one origin and the cookies stay first-party.
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:5173').rstrip('/')
 CSRF_TRUSTED_ORIGINS = [FRONTEND_URL]
+# The forwarded requests may carry the frontend's hostname
+if urlparse(FRONTEND_URL).hostname and not DEBUG:
+    ALLOWED_HOSTS.append(urlparse(FRONTEND_URL).hostname)
 
 SESSION_COOKIE_AGE = 60 * 60 * 24 * 7
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
+# Render (and Vercel in front of it) terminate HTTPS and say so in this header
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+# Render and Vercel already redirect HTTP to HTTPS (and Vercel sends HSTS for the site), so
+# Django doesn't redirect itself; that would also break Render's internal health checks.
+SILENCED_SYSTEM_CHECKS = ['security.W004', 'security.W008']
 
 OTP_LENGTH = 6
 OTP_TTL_SECONDS = 10 * 60
@@ -226,3 +263,23 @@ REST_FRAMEWORK = {
         'uploads': '20/hour',
     },
 }
+
+
+# Errors go to stdout so they show up in Render's logs
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {'console': {'class': 'logging.StreamHandler'}},
+    'root': {'handlers': ['console'], 'level': 'WARNING'},
+}
+
+
+# Refuse to start in production with settings that would leak data or lose files
+if not DEBUG:
+    if SECRET_KEY.startswith('django-insecure-'):
+        raise ImproperlyConfigured('Set DJANGO_SECRET_KEY in production.')
+    if not CLOUDINARY_URL:
+        raise ImproperlyConfigured(
+            "Set CLOUDINARY_URL in production: the server's disk is wiped on every deploy, "
+            'so receipts, documents and profile pictures must be stored in Cloudinary.'
+        )

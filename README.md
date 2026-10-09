@@ -80,6 +80,47 @@ Your Empire Global verification code is 042436.
 | `ADMIN_TWO_FACTOR` | `false` | `true` makes admins confirm each sign-in with an emailed code |
 | `CLOUDINARY_URL` | empty | `cloudinary://<api_key>:<api_secret>@<cloud_name>`; stores uploads in Cloudinary instead of `MEDIA_ROOT` |
 | `CLOUDINARY_FOLDER` | `empire-global` | Folder the uploads go under in Cloudinary |
+| `DATABASE_URL` | empty (SQLite) | Postgres connection string; Render sets it from the database |
+| `RENDER_EXTERNAL_HOSTNAME` | set by Render | Added to `ALLOWED_HOSTS` automatically |
+
+With `DJANGO_DEBUG=false` the server refuses to start without `DJANGO_SECRET_KEY` and `CLOUDINARY_URL`.
+
+## Deploying (Render + Vercel)
+
+The API runs on Render, the React app on Vercel. Vercel forwards every `/api/*` request to Render
+(`vercel.json`), so the browser only ever talks to the Vercel domain and the session and CSRF
+cookies stay first-party. Nothing in the frontend needs an API URL.
+
+**1. Render (backend).** Push the repo, then in Render choose *New > Blueprint* and pick it.
+`render.yaml` creates:
+
+- `empire-global-api`: a Python web service rooted at `backend/`. The build installs the
+  requirements and collects static files (Django admin's CSS). On start it runs `migrate` (which
+  also loads the products and bank accounts), `createcachetable` (shared rate-limit counts),
+  `purge_pending_signups`, then gunicorn.
+- `empire-global-db`: Postgres, in the same region (Frankfurt).
+
+Render asks for `FRONTEND_URL` (your Vercel URL, no trailing slash), `CLOUDINARY_URL`,
+`RESEND_API_KEY`, `DEFAULT_FROM_EMAIL` and `SETUP_TOKEN`; `DJANGO_SECRET_KEY` is generated. Until
+Resend is set up you can change `EMAIL_PROVIDER` to `console` and read codes in Render's logs.
+
+**2. Vercel (frontend).** Import the repo with the defaults (Vite, output `dist`). If Render gave the
+service a different URL from `https://empire-global-api.onrender.com`, change it in `vercel.json`.
+
+**3. First Super Admin.** `POST https://<your-vercel-domain>/api/setup/super-admin/` with header
+`X-Setup-Token: <SETUP_TOKEN>` and body `{"email", "fullName", "password"}`. It only works while no
+Super Admin exists.
+
+Things to know:
+
+- **Free plans.** Render's free web service sleeps after 15 minutes idle; the next request takes
+  up to a minute. Render's free Postgres is **deleted after 30 days**: move to a paid database plan
+  before real customers' money is recorded.
+- **Upload size.** Vercel limits request bodies on its functions to 4.5 MB; check that a loan
+  application with all its documents uploads through the site. If it returns 413, uploads need to
+  go straight to Cloudinary from the browser.
+- Admin users can't be created from a shell on the free plan; use the setup endpoint and the
+  admin portal.
 
 ### Email (Resend)
 
