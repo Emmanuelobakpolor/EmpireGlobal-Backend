@@ -20,21 +20,23 @@ from rest_framework.response import Response
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.views import APIView
 
-from . import emails
+from . import emails, google
 from core import audit
 from payments.files import serve_private_file
 
-from .models import EmailOTP, Role, Status, User
+from .models import AuthProvider, EmailOTP, Role, Status, User
 from .serializers import (
     AvatarSerializer,
     ChangeEmailSerializer,
     ChangePasswordSerializer,
     CodeSerializer,
     EmailSerializer,
+    GoogleCodeSerializer,
     LoginSerializer,
     PasswordResetConfirmSerializer,
     RegisterSerializer,
     SetupSuperAdminSerializer,
+    SignupDetailsSerializer,
     UserSerializer,
     VerifyEmailSerializer,
 )
@@ -172,18 +174,126 @@ class VerifyEmailView(PublicAPIView):
             user.status = Status.ACTIVE
             user.email_verified = True
             user.save(update_fields=['status', 'email_verified'])
-            from payments.models import Notification
-            from payments.notify import notify, notify_admins
-            notify(user, 'Welcome to Empire Global',
-                   'Your account is ready. Browse our products to start saving, investing or apply for a loan.',
-                   Notification.Kind.ACCOUNT, Notification.Type.SUCCESS, link='/customer/products')
-            notify_admins('New customer registered',
-                          f'{user.full_name} ({user.email}) signed up'
-                          + (f' with agent {user.agent_code}.' if user.agent_code else '.'),
-                          Notification.Kind.CUSTOMER, link=f'/admin/customers/{user.public_id}')
+            _welcome_new_customer(user)
 
         login(request, user)
         return Response({'user': UserSerializer(user).data})
+
+
+def _welcome_new_customer(user, via=''):
+    from payments.models import Notification
+    from payments.notify import notify, notify_admins
+    notify(user, 'Welcome to Empire Global',
+           'Your account is ready. Browse our products to start saving, investing or apply for a loan.',
+           Notification.Kind.ACCOUNT, Notification.Type.SUCCESS, link='/customer/products')
+    notify_admins('New customer registered',
+                  f'{user.full_name} ({user.email}) signed up{via}'
+                  + (f' with agent {user.agent_code}.' if user.agent_code else '.'),
+                  Notification.Kind.CUSTOMER, link=f'/admin/customers/{user.public_id}')
+
+
+# ---- Google sign-in (customers only) ----
+
+# Session key holding a verified Google identity that hasn't finished sign-up yet
+GOOGLE_SIGNUP_SESSION_KEY = 'google_signup'
+GOOGLE_DISABLED = 'Google sign-in is not available yet. Please use your email and password.'
+
+
+class GoogleSignInView(PublicAPIView):
+    """GET: whether Google sign-in is on, and the public client ID for the popup.
+    POST {code}: sign in, or start sign-up for a new customer."""
+
+    throttle_scope = 'auth_login'
+
+    def get(self, request):
+        enabled = google.is_enabled()
+        return Response({'enabled': enabled, 'clientId': settings.GOOGLE_CLIENT_ID if enabled else None})
+
+    def post(self, request):
+        if not google.is_enabled():
+            return error(GOOGLE_DISABLED, 'google_disabled', status.HTTP_503_SERVICE_UNAVAILABLE)
+        serializer = GoogleCodeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            identity = google.exchange_code(serializer.validated_data['code'])
+        except google.GoogleAuthError as exc:
+            return error(str(exc), 'google_failed')
+
+        user = (User.objects.filter(google_sub=identity['sub']).first()
+                or User.objects.filter(email=identity['email']).first())
+
+        # An unverified email sign-up is treated as new: Google has now proved who owns the address
+        if user and user.status != Status.PENDING:
+            if user.is_admin:
+                return error('Admins sign in through the admin portal with their email and password.',
+                             'google_admin', status.HTTP_403_FORBIDDEN)
+            if user.status != Status.ACTIVE:
+                return error('Your account has been suspended. Please contact support.', 'account_inactive',
+                             status.HTTP_403_FORBIDDEN)
+            if user.google_sub and user.google_sub != identity['sub']:
+                return error('This email is linked to a different Google account.', 'google_mismatch',
+                             status.HTTP_403_FORBIDDEN)
+            if not user.google_sub:
+                # First Google sign-in for an existing customer: link it (Google verified the email)
+                user.google_sub = identity['sub']
+                user.save(update_fields=['google_sub'])
+            user.clear_failed_logins()
+            request.session.pop(GOOGLE_SIGNUP_SESSION_KEY, None)
+            login(request, user)
+            return Response({'user': UserSerializer(user).data})
+
+        request.session[GOOGLE_SIGNUP_SESSION_KEY] = {
+            **identity,
+            'expires': time.time() + settings.GOOGLE_SIGNUP_WINDOW_SECONDS,
+        }
+        return Response({'isNewUser': True,
+                         'googleProfile': {'email': identity['email'], 'fullName': identity['name']}})
+
+
+class GoogleCompleteSignupView(PublicAPIView):
+    """Second step for a first-time Google user: their name, phone and optional agent code."""
+
+    throttle_scope = 'auth_register'
+
+    def post(self, request):
+        identity = request.session.get(GOOGLE_SIGNUP_SESSION_KEY)
+        if not identity or identity.get('expires', 0) < time.time():
+            request.session.pop(GOOGLE_SIGNUP_SESSION_KEY, None)
+            return error('Your Google sign-up has expired. Please continue with Google again.',
+                         'google_signup_expired')
+        serializer = SignupDetailsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        with transaction.atomic():
+            user = User.objects.select_for_update().filter(email=identity['email']).first()
+            if user and user.status != Status.PENDING:
+                request.session.pop(GOOGLE_SIGNUP_SESSION_KEY, None)
+                return error('An account with this email already exists. Continue with Google to sign in.',
+                             'email_taken')
+            if User.objects.filter(google_sub=identity['sub']).exclude(pk=getattr(user, 'pk', None)).exists():
+                request.session.pop(GOOGLE_SIGNUP_SESSION_KEY, None)
+                return error('This Google account is already linked to another customer.', 'google_mismatch')
+            if user is None:
+                user = User(email=identity['email'], role=Role.CUSTOMER)
+            else:
+                # Replacing an unverified email sign-up: whoever started it never proved the address
+                user.email_otps.filter(purpose=Purpose.VERIFY_EMAIL).delete()
+            user.full_name = data['fullName']
+            user.phone = data['phone']
+            user.agent_code = data.get('agentCode', '')
+            user.status = Status.ACTIVE
+            user.email_verified = True
+            user.auth_provider = AuthProvider.GOOGLE
+            user.google_sub = identity['sub']
+            # No password: they sign in with Google, or set one with "Forgot password"
+            user.set_unusable_password()
+            user.save()
+            _welcome_new_customer(user, via=' with Google')
+
+        request.session.pop(GOOGLE_SIGNUP_SESSION_KEY, None)
+        login(request, user)
+        return Response({'user': UserSerializer(user).data}, status=status.HTTP_201_CREATED)
 
 
 # ---- Sign-in ----
@@ -520,7 +630,8 @@ class PasswordResetRequestView(PublicAPIView):
         serializer = EmailSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = User.objects.filter(email=serializer.validated_data['email'], status=Status.ACTIVE).first()
-        if user and user.has_usable_password():
+        # Google customers have no password until they set one this way
+        if user and (user.has_usable_password() or user.auth_provider == AuthProvider.GOOGLE):
             uid = urlsafe_base64_encode(force_bytes(user.pk))
             token = default_token_generator.make_token(user)
             path = '/admin/reset-password' if user.is_admin else '/reset-password'

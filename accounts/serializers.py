@@ -68,12 +68,14 @@ class UserSerializer(serializers.ModelSerializer):
     outstandingLoan = serializers.FloatField(source='outstanding_loan', read_only=True)
     totalBalance = serializers.SerializerMethodField()
     avatarUrl = serializers.SerializerMethodField()
+    # False for customers who signed up with Google and haven't set a password
+    hasPassword = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = ['id', 'fullName', 'email', 'phone', 'agentCode', 'role', 'status', 'authProvider', 'emailVerified',
                   'joined', 'nextOfKin', 'mustChangePassword', 'savingsBalance', 'investmentBalance', 'outstandingLoan',
-                  'totalBalance', 'avatarUrl']
+                  'totalBalance', 'avatarUrl', 'hasPassword']
         # Email changes go through the confirmation-code flow; role and status are set by admins
         read_only_fields = ['email', 'role', 'status']
 
@@ -84,6 +86,9 @@ class UserSerializer(serializers.ModelSerializer):
     def get_avatarUrl(self, user):
         return avatar_url(user)
 
+    def get_hasPassword(self, user):
+        return user.has_usable_password()
+
     def validate_fullName(self, value):
         value = value.strip()
         if not value:
@@ -91,21 +96,18 @@ class UserSerializer(serializers.ModelSerializer):
         return value
 
 
-class RegisterSerializer(serializers.Serializer):
+class SignupDetailsSerializer(serializers.Serializer):
+    """The details every new customer gives: by email sign-up, or after a first Google sign-in."""
+
     fullName = serializers.CharField(max_length=150)
-    email = serializers.EmailField()
     phone = serializers.CharField(max_length=32)
     agentCode = serializers.CharField(max_length=16, required=False, allow_blank=True)
-    password = serializers.CharField(write_only=True, trim_whitespace=False)
 
     def validate_fullName(self, value):
         value = value.strip()
         if not value:
             raise serializers.ValidationError('Full name is required.')
         return value
-
-    def validate_email(self, value):
-        return value.strip().lower()
 
     def validate_phone(self, value):
         value = value.strip()
@@ -125,6 +127,14 @@ class RegisterSerializer(serializers.Serializer):
             raise serializers.ValidationError('This agent code is no longer active. Check with your agent, or leave it blank.')
         return code
 
+
+class RegisterSerializer(SignupDetailsSerializer):
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True, trim_whitespace=False)
+
+    def validate_email(self, value):
+        return value.strip().lower()
+
     def validate(self, attrs):
         candidate = User(email=attrs['email'], full_name=attrs['fullName'])
         try:
@@ -132,6 +142,10 @@ class RegisterSerializer(serializers.Serializer):
         except DjangoValidationError as exc:
             raise serializers.ValidationError({'password': list(exc.messages)})
         return attrs
+
+
+class GoogleCodeSerializer(serializers.Serializer):
+    code = serializers.CharField(max_length=2048)
 
 
 class EmailSerializer(serializers.Serializer):

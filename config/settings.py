@@ -240,9 +240,12 @@ PENDING_SIGNUP_MAX_AGE_HOURS = 48
 
 PASSWORD_RESET_TIMEOUT = 60 * 60
 
-# Google sign-in (not wired up yet). The OAuth client ID from Google Cloud Console
-# will be used to verify ID tokens sent by the frontend.
+# Google sign-in for customers. Both come from an OAuth client ("Web application") in Google Cloud
+# Console; the button is hidden until both are set. The secret never leaves the server.
 GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
+GOOGLE_CLIENT_SECRET = os.environ.get('GOOGLE_CLIENT_SECRET', '')
+# How long a first-time Google user has to finish their profile
+GOOGLE_SIGNUP_WINDOW_SECONDS = 30 * 60
 
 # First-run setup: POST /api/setup/super-admin/ creates the first Super Admin, and only while
 # none exists. Outside DEBUG it also needs this token in an X-Setup-Token header; with no token

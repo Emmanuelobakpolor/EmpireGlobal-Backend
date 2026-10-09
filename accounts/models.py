@@ -75,6 +75,8 @@ class User(AbstractBaseUser, PermissionsMixin):
     role = models.CharField(max_length=16, choices=Role.choices, default=Role.CUSTOMER)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
     auth_provider = models.CharField(max_length=16, choices=AuthProvider.choices, default=AuthProvider.PASSWORD)
+    # Google's stable account ID, once the customer has signed in with Google
+    google_sub = models.CharField(max_length=255, unique=True, null=True, blank=True, editable=False)
     email_verified = models.BooleanField(default=False)
     # {fullName, phone, relationship, address}; required for savings and investment plans
     next_of_kin = models.JSONField(null=True, blank=True)

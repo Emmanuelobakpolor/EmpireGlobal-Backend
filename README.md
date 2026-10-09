@@ -75,7 +75,8 @@ Your Empire Global verification code is 042436.
 | `DEFAULT_FROM_EMAIL` | `Empire Global <no-reply@empireglobal.com>` | Must be on a domain verified in Resend |
 | `EMAIL_PROVIDER` | `console` | `console` prints emails; `resend` sends them through Resend |
 | `RESEND_API_KEY` | empty | Required when `EMAIL_PROVIDER=resend` |
-| `GOOGLE_CLIENT_ID` | empty | Reserved for Google sign-in (not wired up yet) |
+| `GOOGLE_CLIENT_ID` | empty | OAuth client ID for Google sign-in (customers) |
+| `GOOGLE_CLIENT_SECRET` | empty | Its secret; the Google button is hidden until both are set |
 | `SETUP_TOKEN` | empty | Required by `POST /api/setup/super-admin/` outside development |
 | `ADMIN_TWO_FACTOR` | `false` | `true` makes admins confirm each sign-in with an emailed code |
 | `CLOUDINARY_URL` | empty | `cloudinary://<api_key>:<api_secret>@<cloud_name>`; stores uploads in Cloudinary instead of `MEDIA_ROOT` |
@@ -134,13 +135,40 @@ settings change only. To send real email:
 The backend is `accounts.mail.ResendEmailBackend`, which calls Resend's `POST /emails` API. It is
 covered by a unit test with the HTTP call mocked but has not yet been run against a live Resend account.
 
-### Google sign-in (planned)
+### Google sign-in (customers)
 
-The Google buttons on the login, register and complete-profile pages currently show "not available
-yet". The intended flow: the frontend gets an ID token from Google Identity Services, posts it to a
-new `/api/auth/google/` endpoint, and the backend verifies it against `GOOGLE_CLIENT_ID`, then either
-signs the user in or returns their Google profile so they can add a phone number and agent code.
-The frontend hooks are `continueWithGoogle` and `completeGoogleSignup` in `src/context/AuthContext.jsx`.
+"Continue with Google" on the login and register pages opens Google's popup (Google Identity
+Services, authorization-code flow). The browser gets a one-time code; the backend exchanges it with
+Google using `GOOGLE_CLIENT_SECRET` and reads the verified identity from the ID token (checking
+audience, issuer, expiry and that Google verified the email).
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET | `/api/auth/google/` | `{enabled, clientId}`; the frontend hides the button when disabled |
+| POST | `/api/auth/google/` | `{code}`. Existing customer: signed in, `{user}`. New: `{isNewUser, googleProfile}` |
+| POST | `/api/auth/google/complete/` | `{fullName, phone, agentCode?}` within 30 minutes; creates the account, `201 {user}` |
+
+- New customers are only created after they finish their profile; until then the verified Google
+  identity is kept in their session, so the second step can't be forged.
+- A customer who already registered with email and password is signed in and their Google account
+  is linked (Google has verified the email). Linking uses Google's account ID, so it keeps working
+  if they later change their email here.
+- An unfinished email sign-up (never verified) for the same address is replaced, and its password
+  discarded, because whoever started it never proved they own the address.
+- Admins and suspended customers are refused; admins sign in through the admin portal only.
+- Google customers have no password (`hasPassword: false` in `/api/auth/me/`). They can set one
+  with "Forgot password".
+
+**Setting it up (Google Cloud Console):**
+
+1. Create a project, then *APIs & Services > OAuth consent screen*: user type **External**, app
+   name, support email, and your Vercel domain under authorized domains. Scopes: `openid`, `email`,
+   `profile` (no verification needed for these). Set the publishing status to **In production**, or
+   only listed test users can sign in.
+2. *APIs & Services > Credentials > Create credentials > OAuth client ID*, type **Web application**.
+   Under **Authorized JavaScript origins** add `https://<your-vercel-domain>` and, for
+   development, `http://localhost:5173`. No redirect URIs are needed (the popup uses `postmessage`).
+3. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` on Render (and locally to try it), then restart.
 
 ## Authentication
 

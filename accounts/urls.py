@@ -9,6 +9,8 @@ urlpatterns = [
     path('auth/verify-email/', views.VerifyEmailView.as_view()),
     path('auth/resend-otp/', views.ResendOtpView.as_view()),
     path('auth/login/', views.LoginView.as_view()),
+    path('auth/google/', views.GoogleSignInView.as_view()),
+    path('auth/google/complete/', views.GoogleCompleteSignupView.as_view()),
     path('auth/logout/', views.LogoutView.as_view()),
     path('auth/me/', views.MeView.as_view()),
     path('auth/me/avatar/', views.AvatarView.as_view()),
