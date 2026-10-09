@@ -1,0 +1,30 @@
+{
+  "accounts": [
+    {
+      "id": "ba1",
+      "bankName": "GTBank",
+      "accountName": "Empire Global and Benefits Ltd",
+      "accountNumber": "3002971322",
+      "notes": "For loan and hire purchase repayments. Use your transaction reference as narration.",
+      "status": "active",
+      "createdAt": "2026-10-03"
+    },
+    {
+      "id": "ba2",
+      "bankName": "GTBank",
+      "accountName": "Empire Global and Benefits Ltd",
+      "accountNumber": "3005085503",
+      "notes": "For savings and investment payments. Use your transaction reference as narration.",
+      "status": "active",
+      "createdAt": "2026-10-03"
+    }
+  ],
+  "assignments": {
+    "default": "ba2",
+    "savings": "ba2",
+    "investment": "ba2",
+    "thrift": "ba2",
+    "loan": "ba1",
+    "hire-purchase": "ba1"
+  }
+}

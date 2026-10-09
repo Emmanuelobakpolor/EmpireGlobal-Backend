@@ -1,0 +1,572 @@
+[
+  {
+    "id": "p3",
+    "name": "One-Year Lump-Sum Investment",
+    "category": "One-Time Investment",
+    "type": "investment",
+    "description": "Pay a lump sum once and earn interest on the invested amount over a 12-month contract.",
+    "minAmount": 100000,
+    "maxAmount": 50000000,
+    "duration": "12 months",
+    "termOptions": [
+      12
+    ],
+    "frequency": "One-time lump sum",
+    "expectedReturn": "18% interest",
+    "benefits": [
+      "Access to loan facilities",
+      "Stand as guarantor for other people’s loans of 1% to 80% of your invested amount",
+      "No collateral on loans that fall within your invested amount",
+      "18% interest on the invested amount"
+    ],
+    "clauses": [
+      "The plan cannot be terminated before the maturity of the contract.",
+      "If the contract must be terminated before it expires, the whole interest shall be forfeited.",
+      "Terminating the contract within the first 30 days attracts a 5% penalty, deducted from the amount invested.",
+      "You can only stand as guarantor for another person if your active investment’s maturity date matches the last repayment date of the guaranteed person’s loan.",
+      "If a person you guarantee cannot repay their loan as agreed, the loan deduction and interest shall be deducted from your investment account.",
+      "You must give 5 working days’ notice for a contract termination request to be processed for payment."
+    ],
+    "status": "active",
+    "withdrawalRules": {
+      "allowed": true,
+      "partial_after_months": null,
+      "early_penalty_percent": 5,
+      "early_penalty_days": 30,
+      "notice_working_days": 5,
+      "payout": "any"
+    }
+  },
+  {
+    "id": "p4",
+    "name": "Two or More Years Lump-Sum Investment",
+    "category": "One-Time Investment",
+    "type": "investment",
+    "description": "Pay a lump sum once for a contract of more than 12 months, with interest paid yearly.",
+    "minAmount": 100000,
+    "maxAmount": 50000000,
+    "duration": "More than 12 months",
+    "termOptions": [
+      24,
+      36,
+      48,
+      60
+    ],
+    "frequency": "One-time lump sum",
+    "expectedReturn": "18% yearly",
+    "benefits": [
+      "Access to loan facilities",
+      "Stand as guarantor for other people’s loans of 1% to 80% of your invested amount",
+      "No collateral on loans that fall within your invested amount",
+      "18% interest on the invested amount, paid yearly"
+    ],
+    "clauses": [
+      "The plan cannot be terminated before the maturity of the contract.",
+      "If the contract must be terminated before it expires, the whole interest shall be forfeited.",
+      "Terminating the contract within the first 30 days attracts a 5% penalty, deducted from the amount invested.",
+      "You can only stand as guarantor for another person if your active investment’s maturity date matches the last repayment date of the guaranteed person’s loan.",
+      "If a person you guarantee cannot repay their loan as agreed, the loan deduction and interest shall be deducted from your investment account.",
+      "You must give 5 working days’ notice for a contract termination request to be processed for payment."
+    ],
+    "status": "active",
+    "withdrawalRules": {
+      "allowed": true,
+      "partial_after_months": null,
+      "early_penalty_percent": 5,
+      "early_penalty_days": 30,
+      "notice_working_days": 5,
+      "payout": "any"
+    }
+  },
+  {
+    "id": "p2",
+    "name": "Monthly Savings Investment Plan (MSP)",
+    "category": "Periodic Investment",
+    "type": "savings",
+    "description": "Save every month for as long as you choose and earn interest on your savings.",
+    "minAmount": 5000,
+    "maxAmount": 10000000,
+    "duration": "1 - 24 months",
+    "termOptions": [
+      1,
+      2,
+      6,
+      9,
+      12,
+      18,
+      24
+    ],
+    "frequency": "Daily or Monthly",
+    "expectedReturn": "10% at 12 months",
+    "benefits": [
+      "Access to loan facilities",
+      "No collateral on loans that fall within your current invested amount",
+      "Stand as guarantor for other people’s loans of 1% to 50% of your invested amount as of the date of need",
+      "Partial withdrawal after the 8th month",
+      "10% commission on a contract that lasts 12 months"
+    ],
+    "clauses": [
+      "The plan cannot be terminated before the maturity of the contract.",
+      "If the contract must be terminated before maturity, the whole interest shall be forfeited.",
+      "Terminating the contract within the first 30 days attracts a 5% penalty, deducted from the amount invested.",
+      "You must give 5 working days’ notice for a contract termination request to be processed for payment.",
+      "You can only stand as guarantor for another person if your active investment’s maturity date matches the last repayment date of the guaranteed person’s loan.",
+      "If a person you guarantee cannot repay their loan as agreed, the loan deduction and interest shall be deducted from your investment account.",
+      "Partial withdrawal can only be made after the 8th month of the 12-month contract, and interest is then calculated on your current invested capital only.",
+      "Savings must be made as agreed in the contract; missed savings attract a penalty on the interest."
+    ],
+    "status": "active",
+    "withdrawalRules": {
+      "allowed": true,
+      "partial_after_months": 8,
+      "early_penalty_percent": 5,
+      "early_penalty_days": 30,
+      "notice_working_days": 5,
+      "payout": "any"
+    }
+  },
+  {
+    "id": "p1",
+    "name": "Weekly Savings Investment Plan (WSP)",
+    "category": "Periodic Investment",
+    "type": "savings",
+    "description": "Save every week for as long as you choose and earn interest on your savings.",
+    "minAmount": 2000,
+    "maxAmount": 5000000,
+    "duration": "1 - 24 months",
+    "termOptions": [
+      1,
+      2,
+      6,
+      9,
+      12,
+      18,
+      24
+    ],
+    "frequency": "Daily or Weekly",
+    "expectedReturn": "10% at 12 months",
+    "benefits": [
+      "Access to loan facilities",
+      "No collateral on loans that fall within your current invested amount",
+      "Stand as guarantor for other people’s loans of 1% to 50% of your invested amount as of the date of need",
+      "Partial withdrawal after the 8th month",
+      "10% commission on a contract that lasts 12 months"
+    ],
+    "clauses": [
+      "The plan cannot be terminated before the maturity of the contract.",
+      "If the contract must be terminated before maturity, the whole interest shall be forfeited.",
+      "Terminating the contract within the first 30 days attracts a 5% penalty, deducted from the amount invested.",
+      "You must give 5 working days’ notice for a contract termination request to be processed for payment.",
+      "You can only stand as guarantor for another person if your active investment’s maturity date matches the last repayment date of the guaranteed person’s loan.",
+      "If a person you guarantee cannot repay their loan as agreed, the loan deduction and interest shall be deducted from your investment account.",
+      "Partial withdrawal can only be made after the 8th month of the 12-month contract, and interest is then calculated on your current invested capital only.",
+      "Savings must be made as agreed in the contract; missed savings attract a penalty on the interest."
+    ],
+    "status": "active",
+    "withdrawalRules": {
+      "allowed": true,
+      "partial_after_months": 8,
+      "early_penalty_percent": 5,
+      "early_penalty_days": 30,
+      "notice_working_days": 5,
+      "payout": "any"
+    }
+  },
+  {
+    "id": "p11",
+    "name": "Daily Savings Investment Plan (DSP)",
+    "category": "Periodic Investment",
+    "type": "savings",
+    "description": "Save every day for as long as you choose and earn interest on your savings.",
+    "minAmount": 500,
+    "maxAmount": 1000000,
+    "duration": "1 - 24 months",
+    "termOptions": [
+      1,
+      2,
+      6,
+      9,
+      12,
+      18,
+      24
+    ],
+    "frequency": "Daily",
+    "expectedReturn": "10% at 12 months",
+    "benefits": [
+      "Access to loan facilities",
+      "No collateral on loans that fall within your current invested amount",
+      "Stand as guarantor for other people’s loans of 1% to 50% of your invested amount as of the date of need",
+      "Partial withdrawal after the 8th month",
+      "10% commission on a contract that lasts 12 months"
+    ],
+    "clauses": [
+      "The plan cannot be terminated before the maturity of the contract.",
+      "If the contract must be terminated before maturity, the whole interest shall be forfeited.",
+      "Terminating the contract within the first 30 days attracts a 5% penalty, deducted from the amount invested.",
+      "You must give 5 working days’ notice for a contract termination request to be processed for payment.",
+      "You can only stand as guarantor for another person if your active investment’s maturity date matches the last repayment date of the guaranteed person’s loan.",
+      "If a person you guarantee cannot repay their loan as agreed, the loan deduction and interest shall be deducted from your investment account.",
+      "Partial withdrawal can only be made after the 8th month of the 12-month contract, and interest is then calculated on your current invested capital only.",
+      "Savings must be made as agreed in the contract; missed savings attract a penalty on the interest."
+    ],
+    "status": "active",
+    "withdrawalRules": {
+      "allowed": true,
+      "partial_after_months": 8,
+      "early_penalty_percent": 5,
+      "early_penalty_days": 30,
+      "notice_working_days": 5,
+      "payout": "any"
+    }
+  },
+  {
+    "id": "p5",
+    "name": "Monthly Collection (MC)",
+    "category": "Thrift Savings",
+    "type": "thrift",
+    "description": "Set aside an amount daily or weekly, collected at the end of one month. No interest attached.",
+    "minAmount": 1000,
+    "maxAmount": 2000000,
+    "duration": "1 month",
+    "termOptions": [
+      1
+    ],
+    "frequency": "Daily or Weekly",
+    "expectedReturn": null,
+    "benefits": [
+      "Access to loan facilities"
+    ],
+    "clauses": [
+      "Eligibility for loan facilities is determined by management.",
+      "Loan facility limits are determined by management.",
+      "You must give 24 hours’ notice when requesting a withdrawal before the month ends."
+    ],
+    "status": "active",
+    "withdrawalRules": {
+      "allowed": true,
+      "partial_after_months": 0,
+      "notice_hours": 24,
+      "payout": "month_end"
+    }
+  },
+  {
+    "id": "p6",
+    "name": "Quarterly Collection (QC)",
+    "category": "Thrift Savings",
+    "type": "thrift",
+    "description": "Set aside an amount daily or weekly, collected every quarter, and earn 2.5% interest.",
+    "minAmount": 1000,
+    "maxAmount": 5000000,
+    "duration": "1 - 12 months",
+    "termOptions": [
+      1,
+      2,
+      3,
+      6,
+      9,
+      12
+    ],
+    "frequency": "Daily or Weekly",
+    "expectedReturn": "2.5% interest",
+    "benefits": [
+      "Access to loan facilities",
+      "Interest of 2.5% on savings"
+    ],
+    "clauses": [
+      "Eligibility for loan facilities is determined by management.",
+      "Loan facilities cannot be more than ₦50,000."
+    ],
+    "status": "active",
+    "withdrawalRules": {
+      "allowed": true,
+      "partial_after_months": 0,
+      "payout": "quarter_end"
+    }
+  },
+  {
+    "id": "p12",
+    "name": "Accessible Savings Account (ASA)",
+    "category": "Thrift Savings",
+    "type": "thrift",
+    "description": "Save and withdraw at any point in time.",
+    "minAmount": 500,
+    "maxAmount": 5000000,
+    "duration": "Flexible",
+    "termOptions": null,
+    "frequency": "Daily, Weekly or Monthly",
+    "expectedReturn": null,
+    "benefits": [
+      "Withdraw at any time",
+      "Access to loan facilities based on your saving history"
+    ],
+    "clauses": [
+      "Eligibility for loan facilities is determined by management.",
+      "Loan facility limits are determined by management."
+    ],
+    "status": "active",
+    "withdrawalRules": {
+      "allowed": true,
+      "partial_after_months": 0,
+      "payout": "any"
+    }
+  },
+  {
+    "id": "p7",
+    "name": "Salary Advance",
+    "category": "Loan Facilities",
+    "type": "loan",
+    "description": "Borrow against your salary if you work under an employment contract, and repay when your salary is paid.",
+    "minAmount": 10000,
+    "maxAmount": 500000,
+    "duration": "Until next salary",
+    "termOptions": [
+      1
+    ],
+    "frequency": "One-time on payday",
+    "expectedReturn": null,
+    "benefits": [
+      "Fast access to funds before payday",
+      "Repaid in one instalment when your salary is paid"
+    ],
+    "requirements": [
+      "You must be under an employment contract",
+      "Proof of income, e.g. bank statement or pay slip",
+      "Proof of employment",
+      "Valid ID and documentation"
+    ],
+    "requiredDocuments": [
+      {
+        "key": "proofOfIncome",
+        "label": "Proof of income",
+        "hint": "Bank statement or pay slip"
+      },
+      {
+        "key": "proofOfEmployment",
+        "label": "Proof of employment",
+        "hint": "Employment contract or letter"
+      }
+    ],
+    "status": "active",
+    "withdrawalRules": {}
+  },
+  {
+    "id": "p13",
+    "name": "House Rent Loan",
+    "category": "Loan Facilities",
+    "type": "loan",
+    "description": "Pay off or balance your rent, and repay over an agreed period.",
+    "minAmount": 50000,
+    "maxAmount": 3000000,
+    "duration": "1 - 12 months",
+    "termOptions": [
+      1,
+      2,
+      3,
+      6,
+      9,
+      12
+    ],
+    "frequency": "Daily or Monthly",
+    "expectedReturn": null,
+    "benefits": [
+      "Pay your rent on time",
+      "Spread repayment over an agreed period"
+    ],
+    "requirements": [
+      "Income and employment stability",
+      "Debt-to-income assessment",
+      "Identity and residence verification",
+      "Evidence of cash reserves and assets"
+    ],
+    "requiredDocuments": [
+      {
+        "key": "proofOfIncome",
+        "label": "Proof of income",
+        "hint": "Bank statement or pay slip"
+      },
+      {
+        "key": "bankStatement",
+        "label": "Bank statement (last 6 months)",
+        "hint": "Shows cash reserves and income"
+      }
+    ],
+    "status": "active",
+    "withdrawalRules": {}
+  },
+  {
+    "id": "p14",
+    "name": "Academic Loan",
+    "category": "Loan Facilities",
+    "type": "loan",
+    "description": "Finance school fees and other academic costs, and repay over an agreed period.",
+    "minAmount": 20000,
+    "maxAmount": 2000000,
+    "duration": "1 - 12 months",
+    "termOptions": [
+      1,
+      2,
+      3,
+      6,
+      9,
+      12
+    ],
+    "frequency": "Daily or Monthly",
+    "expectedReturn": null,
+    "benefits": [
+      "Cover school fees and academic costs",
+      "Spread repayment over an agreed period"
+    ],
+    "status": "active",
+    "withdrawalRules": {}
+  },
+  {
+    "id": "p8",
+    "name": "Business Loan",
+    "category": "Loan Facilities",
+    "type": "loan",
+    "description": "Funding to start or grow your business, repaid over an agreed period.",
+    "minAmount": 50000,
+    "maxAmount": 5000000,
+    "duration": "1 - 12 months",
+    "termOptions": [
+      1,
+      2,
+      3,
+      6,
+      9,
+      12
+    ],
+    "frequency": "Daily, Weekly or Monthly",
+    "expectedReturn": null,
+    "benefits": [
+      "Working capital for your business",
+      "Weekly or monthly repayment"
+    ],
+    "status": "active",
+    "withdrawalRules": {}
+  },
+  {
+    "id": "p15",
+    "name": "Phone / Gadget / Laptop Loan",
+    "category": "Loan Facilities",
+    "type": "loan",
+    "description": "Borrow to buy a phone, gadget or laptop, and repay over an agreed period.",
+    "minAmount": 20000,
+    "maxAmount": 1500000,
+    "duration": "1 - 12 months",
+    "termOptions": [
+      1,
+      2,
+      3,
+      6,
+      9,
+      12
+    ],
+    "frequency": "Daily, Weekly or Monthly",
+    "expectedReturn": null,
+    "benefits": [
+      "Get the device you need now",
+      "Weekly or monthly repayment"
+    ],
+    "status": "active",
+    "withdrawalRules": {}
+  },
+  {
+    "id": "p16",
+    "name": "Home Appliances Loan",
+    "category": "Loan Facilities",
+    "type": "loan",
+    "description": "Borrow to buy home appliances, and repay over an agreed period.",
+    "minAmount": 20000,
+    "maxAmount": 2000000,
+    "duration": "1 - 12 months",
+    "termOptions": [
+      1,
+      2,
+      3,
+      6,
+      9,
+      12
+    ],
+    "frequency": "Daily, Weekly or Monthly",
+    "expectedReturn": null,
+    "benefits": [
+      "Equip your home now",
+      "Weekly or monthly repayment"
+    ],
+    "status": "active",
+    "withdrawalRules": {}
+  },
+  {
+    "id": "p9",
+    "name": "Hire-Purchase: Electronics",
+    "category": "Hire-Purchase",
+    "type": "hire-purchase",
+    "description": "Get phones, laptops, home appliances and other electronics now, and pay in instalments.",
+    "minAmount": 20000,
+    "maxAmount": 3000000,
+    "duration": "1 - 12 months",
+    "termOptions": [
+      1,
+      2,
+      3,
+      6,
+      9,
+      12
+    ],
+    "frequency": "Daily, Weekly or Monthly",
+    "expectedReturn": null,
+    "benefits": [
+      "Take the item home now",
+      "Pay in weekly or monthly instalments"
+    ],
+    "clauses": [
+      "Ownership of the item transfers to you only after full payment of all instalments.",
+      "Guarantor details are mandatory as part of the application.",
+      "The item requested determines the interest rate used to calculate your repayments."
+    ],
+    "itemCategories": [
+      "Phones & gadgets",
+      "Laptops & computers",
+      "Home appliances",
+      "Other electronics"
+    ],
+    "status": "active",
+    "withdrawalRules": {}
+  },
+  {
+    "id": "p10",
+    "name": "Hire-Purchase: Tricycles & Bikes",
+    "category": "Hire-Purchase",
+    "type": "hire-purchase",
+    "description": "Get a tricycle (keke) or bike now, and pay in instalments. Cars and larger vehicles are not available.",
+    "minAmount": 300000,
+    "maxAmount": 6000000,
+    "duration": "1 - 24 months",
+    "termOptions": [
+      1,
+      2,
+      6,
+      12,
+      18,
+      24
+    ],
+    "frequency": "Daily, Weekly or Monthly",
+    "expectedReturn": null,
+    "benefits": [
+      "Start earning with your vehicle straight away",
+      "Pay in weekly or monthly instalments"
+    ],
+    "clauses": [
+      "Ownership of the item transfers to you only after full payment of all instalments.",
+      "Guarantor details are mandatory as part of the application.",
+      "The item requested determines the interest rate used to calculate your repayments."
+    ],
+    "itemCategories": [
+      "Tricycle",
+      "Bike"
+    ],
+    "status": "active",
+    "withdrawalRules": {}
+  }
+]
