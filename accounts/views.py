@@ -5,7 +5,9 @@ from django.contrib.auth import login, logout, password_validation, update_sessi
 from django.contrib.auth.tokens import default_token_generator
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
+from django.http import Http404, HttpResponseRedirect
 from django.middleware.csrf import get_token
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
@@ -15,13 +17,16 @@ from rest_framework import status
 from rest_framework.authentication import SessionAuthentication
 from rest_framework.permissions import SAFE_METHODS, AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.views import APIView
 
 from . import emails
 from core import audit
+from payments.files import serve_private_file
 
 from .models import EmailOTP, Role, Status, User
 from .serializers import (
+    AvatarSerializer,
     ChangeEmailSerializer,
     ChangePasswordSerializer,
     CodeSerializer,
@@ -335,6 +340,53 @@ class MeView(CsrfAPIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response({'user': serializer.data})
+
+
+class AvatarView(CsrfAPIView):
+    """Upload (POST, multipart `avatar`) or remove (DELETE) the signed-in user's display picture."""
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+    throttle_scope = 'uploads'
+
+    def post(self, request):
+        serializer = AvatarSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = request.user
+        old = user.avatar.name if user.avatar else None
+        user.avatar = serializer.validated_data['avatar']
+        user.avatar_updated_at = timezone.now()
+        user.save(update_fields=['avatar', 'avatar_updated_at'])
+        if old and old != user.avatar.name:
+            user.avatar.storage.delete(old)
+        return Response({'user': UserSerializer(user).data})
+
+    def delete(self, request):
+        user = request.user
+        if user.avatar:
+            user.avatar.delete(save=False)
+            user.avatar_updated_at = timezone.now()
+            user.save(update_fields=['avatar', 'avatar_updated_at'])
+        return Response({'user': UserSerializer(user).data})
+
+
+class AvatarFileView(CsrfAPIView):
+    """A user's display picture, for themselves or an admin (local storage; Cloudinary links go direct)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, public_id):
+        if request.user.public_id != public_id and not request.user.is_admin:
+            raise Http404
+        user = get_object_or_404(User, public_id=public_id)
+        if not user.avatar:
+            raise Http404
+        if hasattr(user.avatar.storage, 'avatar_url'):
+            return HttpResponseRedirect(user.avatar.storage.avatar_url(user.avatar.name))
+        response = serve_private_file(user.avatar, f'{user.public_id}-avatar.{user.avatar.name.rsplit(".", 1)[-1]}')
+        # The URL carries a version, so the browser may keep it for a while
+        response['Cache-Control'] = 'private, max-age=86400'
+        return response
 
 
 class ChangePasswordView(CsrfAPIView):

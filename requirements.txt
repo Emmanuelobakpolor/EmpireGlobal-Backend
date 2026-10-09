@@ -1,5 +1,9 @@
 asgiref==3.12.1
+certifi==2026.7.22
+cloudinary==1.46.3
 Django==6.1.1
 djangorestframework==3.18.1
+six==1.17.0
 sqlparse==0.6.0
 tzdata==2026.5
+urllib3==2.8.0

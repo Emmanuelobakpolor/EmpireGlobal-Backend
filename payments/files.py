@@ -16,17 +16,19 @@ SIGNATURES = {
 }
 
 
-def validate_upload(file):
+def validate_upload(file, images_only=False):
     if file.size > MAX_UPLOAD_BYTES:
         raise serializers.ValidationError('Files must be 5 MB or smaller.')
     ext = file.name.rsplit('.', 1)[-1].lower() if '.' in file.name else ''
-    signatures = SIGNATURES.get(ext)
+    signatures = SIGNATURES.get(ext) if not (images_only and ext == 'pdf') else None
     if not signatures:
-        raise serializers.ValidationError('Upload a JPG, PNG, WebP or PDF file.')
+        raise serializers.ValidationError('Upload a JPG, PNG or WebP image.' if images_only
+                                          else 'Upload a JPG, PNG, WebP or PDF file.')
     head = file.read(16)
     file.seek(0)
     if not any(head.startswith(sig) for sig in signatures) or (ext == 'webp' and head[8:12] != b'WEBP'):
-        raise serializers.ValidationError("This file doesn't look like a valid image or PDF.")
+        raise serializers.ValidationError("This file doesn't look like a valid image." if images_only
+                                          else "This file doesn't look like a valid image or PDF.")
     return file
 
 

@@ -3,6 +3,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from core.models import Agent
+from payments.files import validate_upload
 
 from .models import Role, Status, User, normalize_agent_code
 
@@ -37,6 +38,19 @@ class NextOfKinField(serializers.JSONField):
         return value
 
 
+def avatar_url(user):
+    """Where the app loads a user's display picture from, or None when they haven't set one."""
+    if not user.avatar:
+        return None
+    storage = user.avatar.storage
+    if hasattr(storage, 'avatar_url'):
+        # Cloudinary: a signed, face-cropped link straight to the CDN
+        return storage.avatar_url(user.avatar.name)
+    # Local storage: streamed by the API; the version busts the browser cache after a change
+    version = int(user.avatar_updated_at.timestamp()) if user.avatar_updated_at else 0
+    return f'/api/users/{user.public_id}/avatar/?v={version}'
+
+
 class UserSerializer(serializers.ModelSerializer):
     """The signed-in user, in the camelCase shape the React app already uses."""
 
@@ -53,18 +67,22 @@ class UserSerializer(serializers.ModelSerializer):
     investmentBalance = serializers.FloatField(source='investment_balance', read_only=True)
     outstandingLoan = serializers.FloatField(source='outstanding_loan', read_only=True)
     totalBalance = serializers.SerializerMethodField()
+    avatarUrl = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = ['id', 'fullName', 'email', 'phone', 'agentCode', 'role', 'status', 'authProvider', 'emailVerified',
                   'joined', 'nextOfKin', 'mustChangePassword', 'savingsBalance', 'investmentBalance', 'outstandingLoan',
-                  'totalBalance']
+                  'totalBalance', 'avatarUrl']
         # Email changes go through the confirmation-code flow; role and status are set by admins
         read_only_fields = ['email', 'role', 'status']
 
     def get_totalBalance(self, user):
         # As shown in the app: what the customer holds, not counting loans
         return float(user.savings_balance + user.investment_balance)
+
+    def get_avatarUrl(self, user):
+        return avatar_url(user)
 
     def validate_fullName(self, value):
         value = value.strip()
@@ -184,10 +202,14 @@ class AdminAccountSerializer(serializers.ModelSerializer):
     status = serializers.ChoiceField(choices=[Status.ACTIVE, Status.INACTIVE], required=False)
     password = serializers.CharField(write_only=True, required=False, allow_blank=True, trim_whitespace=False)
     createdAt = serializers.DateTimeField(source='date_joined', format='%Y-%m-%d', read_only=True)
+    avatarUrl = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ['id', 'fullName', 'email', 'role', 'status', 'password', 'createdAt']
+        fields = ['id', 'fullName', 'email', 'role', 'status', 'password', 'createdAt', 'avatarUrl']
+
+    def get_avatarUrl(self, user):
+        return avatar_url(user)
 
     def validate_fullName(self, value):
         value = value.strip()
@@ -244,6 +266,13 @@ class AdminAccountSerializer(serializers.ModelSerializer):
             instance.must_change_password = instance.pk != self.context['request'].user.pk
         instance.save()
         return instance
+
+
+class AvatarSerializer(serializers.Serializer):
+    avatar = serializers.FileField()
+
+    def validate_avatar(self, file):
+        return validate_upload(file, images_only=True)
 
 
 class SetupSuperAdminSerializer(serializers.Serializer):

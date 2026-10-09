@@ -11,6 +11,8 @@ urlpatterns = [
     path('auth/login/', views.LoginView.as_view()),
     path('auth/logout/', views.LogoutView.as_view()),
     path('auth/me/', views.MeView.as_view()),
+    path('auth/me/avatar/', views.AvatarView.as_view()),
+    path('users/<str:public_id>/avatar/', views.AvatarFileView.as_view()),
     path('auth/change-password/', views.ChangePasswordView.as_view()),
     path('auth/change-email/', views.ChangeEmailView.as_view()),
     path('auth/change-email/resend/', views.ResendChangeEmailView.as_view()),

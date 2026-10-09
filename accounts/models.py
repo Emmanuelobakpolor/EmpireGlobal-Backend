@@ -1,4 +1,5 @@
 import secrets
+import uuid
 from datetime import timedelta
 
 from django.conf import settings
@@ -33,6 +34,11 @@ ID_PREFIXES = {Role.CUSTOMER: 'EMP', Role.ADMIN: 'ADM', Role.SUPER_ADMIN: 'ADM'}
 
 def normalize_agent_code(code):
     return (code or '').strip().upper()
+
+
+def avatar_path(instance, filename):
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'bin'
+    return f'avatars/{uuid.uuid4().hex}.{ext}'
 
 
 class UserManager(BaseUserManager):
@@ -85,6 +91,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     investment_balance = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     outstanding_loan = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     date_joined = models.DateTimeField(default=timezone.now)
+
+    # Display picture (Cloudinary in production, MEDIA_ROOT in development)
+    avatar = models.FileField(upload_to=avatar_path, blank=True)
+    avatar_updated_at = models.DateTimeField(null=True, blank=True)
 
     objects = UserManager()
 

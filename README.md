@@ -78,6 +78,8 @@ Your Empire Global verification code is 042436.
 | `GOOGLE_CLIENT_ID` | empty | Reserved for Google sign-in (not wired up yet) |
 | `SETUP_TOKEN` | empty | Required by `POST /api/setup/super-admin/` outside development |
 | `ADMIN_TWO_FACTOR` | `false` | `true` makes admins confirm each sign-in with an emailed code |
+| `CLOUDINARY_URL` | empty | `cloudinary://<api_key>:<api_secret>@<cloud_name>`; stores uploads in Cloudinary instead of `MEDIA_ROOT` |
+| `CLOUDINARY_FOLDER` | `empire-global` | Folder the uploads go under in Cloudinary |
 
 ### Email (Resend)
 
@@ -184,15 +186,40 @@ Customers never see `slipTrail` (it can hold internal notes). Balances appear on
 admin customer list; they can't be edited directly, including in Django admin, where transactions
 are read-only.
 
-**Receipt files** are saved under `MEDIA_ROOT` (default `backend/media/`, git-ignored) with random
-names and are never served as public files, only through the receipt endpoint above. In production,
-put `MEDIA_ROOT` on persistent private storage (or a private S3-compatible bucket) and back it up.
+**Receipt files** are saved with random names and are never served as public files, only through
+the receipt endpoint above. See *File storage* below for where they live.
 
 **Application documents.** Loan and hire-purchase applications must include the four standard
 documents (passport photograph, proof of address, proof of ID, completed application form), any the
 product adds (e.g. proof of income), and the guarantor's ID (`guarantorId`). They're uploaded with
-the application, checked like receipts, stored privately under `MEDIA_ROOT`, and the transaction and
+the application, checked like receipts, stored privately (see *File storage*), and the transaction and
 its files are saved together or not at all.
+
+**Display pictures.** Customers and admins can set a profile picture (JPG, PNG or WebP, up to 5 MB,
+checked by its first bytes like receipts):
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| POST | `/api/auth/me/avatar/` | Multipart field `avatar`; replaces (and deletes) any previous picture |
+| DELETE | `/api/auth/me/avatar/` | Removes it |
+| GET | `/api/users/<id>/avatar/` | The picture, for its owner or an admin (local storage only; see below) |
+
+`avatarUrl` (or `null`) is included in `/api/auth/me/`, the admin customer list and the admin list.
+
+**File storage.** Without `CLOUDINARY_URL`, uploads go to `MEDIA_ROOT` (default `backend/media/`,
+git-ignored). That's fine for development, but most hosts wipe the disk on every deploy, so in
+production set `CLOUDINARY_URL` (Cloudinary dashboard -> *API Keys*):
+
+- Every file is uploaded as an **authenticated** asset under `CLOUDINARY_FOLDER`, so a plain
+  Cloudinary link can't open it. Images are stored as images; PDFs as raw files.
+- Receipts and application documents still go through the API's permission checks: the server
+  downloads them from Cloudinary with a signed link that expires after 60 seconds and streams them on.
+- Display pictures are returned as signed Cloudinary URLs, cropped to 256x256 around the face and
+  served in the best format for the browser, straight from Cloudinary's CDN.
+- Replaced or removed files are deleted from Cloudinary too.
+
+Files uploaded before you set `CLOUDINARY_URL` stay on disk and won't be found afterwards, so switch
+before going live (production starts with an empty database anyway).
 
 **Payment account.** When a transaction is created the server records which collection account the
 customer must pay into (`paymentAccount`). Later changes to bank accounts don't alter it.

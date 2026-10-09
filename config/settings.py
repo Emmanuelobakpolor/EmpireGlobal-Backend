@@ -126,9 +126,23 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
-# Uploaded files (payment receipts). Never served directly: the API streams them to
-# the owner or an admin. In production point this at private storage.
+# Uploaded files (payment receipts, application documents, display pictures). Never served
+# directly: receipts and documents are streamed to the owner or an admin by the API.
+# With CLOUDINARY_URL set (cloudinary://<api_key>:<api_secret>@<cloud_name>) they're stored in
+# Cloudinary as authenticated (private) assets; otherwise on disk under MEDIA_ROOT.
 MEDIA_ROOT = Path(os.environ.get('MEDIA_ROOT', BASE_DIR / 'media'))
+CLOUDINARY_URL = os.environ.get('CLOUDINARY_URL', '')
+CLOUDINARY_FOLDER = os.environ.get('CLOUDINARY_FOLDER', 'empire-global')
+
+STORAGES = {
+    'default': {
+        'BACKEND': 'core.storage.CloudinaryStorage' if CLOUDINARY_URL
+        else 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage',
+    },
+}
 DATA_UPLOAD_MAX_MEMORY_SIZE = 6 * 1024 * 1024
 FILE_UPLOAD_MAX_MEMORY_SIZE = 6 * 1024 * 1024
 
