@@ -32,7 +32,7 @@ SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'django-insecure-syr%)hkwa%6&(=
 DEBUG = os.environ.get('DJANGO_DEBUG', 'true').lower() == 'true'
 
 ALLOWED_HOSTS = [h.strip() for h in os.environ.get('DJANGO_ALLOWED_HOSTS', '').split(',') if h.strip()]
-# Render sets this to the service's own hostname (e.g. empire-global-api.onrender.com)
+# Render sets this to the service's own hostname (e.g. empireglobal-backend.onrender.com)
 if os.environ.get('RENDER_EXTERNAL_HOSTNAME'):
     ALLOWED_HOSTS.append(os.environ['RENDER_EXTERNAL_HOSTNAME'])
 

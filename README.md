@@ -94,7 +94,7 @@ cookies stay first-party. Nothing in the frontend needs an API URL.
 **1. Render (backend).** Push the repo, then in Render choose *New > Blueprint* and pick it.
 `render.yaml` creates:
 
-- `empire-global-api`: a Python web service rooted at `backend/`. The build installs the
+- `empireglobal-backend`: a Python web service rooted at `backend/`. The build installs the
   requirements and collects static files (Django admin's CSS). On start it runs `migrate` (which
   also loads the products and bank accounts), `createcachetable` (shared rate-limit counts),
   `purge_pending_signups`, then gunicorn.
@@ -105,7 +105,7 @@ Render asks for `FRONTEND_URL` (your Vercel URL, no trailing slash), `CLOUDINARY
 Resend is set up you can change `EMAIL_PROVIDER` to `console` and read codes in Render's logs.
 
 **2. Vercel (frontend).** Import the repo with the defaults (Vite, output `dist`). If Render gave the
-service a different URL from `https://empire-global-api.onrender.com`, change it in `vercel.json`.
+service a different URL from `https://empireglobal-backend.onrender.com`, change it in `vercel.json`.
 
 **3. First Super Admin.** `POST https://<your-vercel-domain>/api/setup/super-admin/` with header
 `X-Setup-Token: <SETUP_TOKEN>` and body `{"email", "fullName", "password"}`. It only works while no
