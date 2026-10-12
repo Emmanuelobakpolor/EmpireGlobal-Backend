@@ -317,7 +317,9 @@ Credit facilities the customer repays by instalments (`payments/facilities.py`).
 
 **Reminders.** Customers are notified and emailed once per instalment as it comes into the 7-day
 window, and once when it goes overdue (admins are told too). This runs whenever a customer loads their
-transactions, and with `python manage.py send_repayment_reminders`; run that daily in production.
+transactions, and with `python manage.py send_repayment_reminders`. On Render it runs on every start
+(see `render.yaml`), which on the free plan is several times a day; on a paid plan, where the instance
+rarely restarts, run it daily from a Render Cron Job instead.
 
 | Method | Endpoint | Who | Notes |
 | --- | --- | --- | --- |
