@@ -15,14 +15,25 @@ from accounts.views import CsrfAPIView, error
 from core import audit
 from core.models import AuditLog
 
-from . import services
+from . import facilities, services
 from .files import serve_private_file
-from .models import ApplicationDocument, BankAccount, FacilityAssignment, Notification, Transaction
+from .models import (
+    FACILITY_TYPES,
+    ApplicationDocument,
+    BankAccount,
+    FacilityAssignment,
+    FacilityStatus,
+    Notification,
+    Repayment,
+    Transaction,
+)
 from .notify import customer_link, notify, notify_admins, payment_review_link
 from .serializers import (
     FACILITIES,
     AdminTransactionSerializer,
+    ApproveSerializer,
     AssignmentSerializer,
+    DisburseSerializer,
     BankAccountSerializer,
     CreateTransactionSerializer,
     NotificationSerializer,
@@ -34,8 +45,9 @@ from .serializers import (
     assignments_dict,
 )
 
-ADMIN_QUERYSET = Transaction.objects.select_related('customer').prefetch_related('slip_events', 'documents')
-CUSTOMER_QUERYSET = Transaction.objects.select_related('customer').prefetch_related('documents')
+ADMIN_QUERYSET = Transaction.objects.select_related('customer').prefetch_related(
+    'slip_events', 'documents', 'repayments__events')
+CUSTOMER_QUERYSET = Transaction.objects.select_related('customer').prefetch_related('documents', 'repayments')
 
 
 class IsCustomer(IsAuthenticated):
@@ -51,6 +63,8 @@ class TransactionListView(CsrfAPIView):
     parser_classes = [JSONParser, MultiPartParser, FormParser]
 
     def get(self, request):
+        # No scheduler is needed for repayment reminders: they're also sent as customers come by
+        facilities.send_reminders(customer=request.user)
         txns = CUSTOMER_QUERYSET.filter(customer=request.user)
         return Response({'transactions': TransactionSerializer(txns, many=True).data})
 
@@ -70,7 +84,10 @@ class TransactionListView(CsrfAPIView):
         now = timezone.now()
         start = timezone.localdate()
         term = data['termMonths']
-        account = BankAccount.for_product_type(product.type)
+        is_facility = product.type in FACILITY_TYPES
+        # Loans and hire-purchase aren't paid for up front: the collection account is shown
+        # for each repayment as it comes due instead
+        account = None if is_facility else BankAccount.for_product_type(product.type)
         with db_transaction.atomic():
             txn = Transaction.objects.create(
                 customer=request.user,
@@ -87,6 +104,12 @@ class TransactionListView(CsrfAPIView):
                 # What the customer is told to pay into, fixed at this moment
                 paid_to=account.as_payment_details() if account else None,
                 created_at=now,
+                **({
+                    'status': Transaction.Status.PENDING,
+                    'facility_status': FacilityStatus.UNDER_REVIEW,
+                    'repayment_frequency': data['repaymentFrequency'],
+                    'disbursement_account': data['disbursementAccount'],
+                } if is_facility else {}),
             )
             for spec, upload in data['documents']:
                 ApplicationDocument.objects.create(
@@ -96,13 +119,13 @@ class TransactionListView(CsrfAPIView):
             if txn.application:
                 kind = 'hire-purchase' if txn.product_type == 'hire-purchase' else 'loan'
                 notify(request.user, 'Application received',
-                       f'We received your {txn.product_name} application ({txn.reference}). Make your payment and '
-                       'upload the receipt so we can review it.', Notification.Kind.APPLICATION,
+                       f"We received your {txn.product_name} application ({txn.reference}). We'll review it and "
+                       "let you know the outcome. There's nothing to pay now.", Notification.Kind.APPLICATION,
                        link=customer_link(txn))
                 notify_admins(f'New {kind} application',
                               f'{request.user.full_name} applied for {txn.product_name} '
                               f'(₦{float(txn.amount):,.0f}, {txn.reference}).',
-                              Notification.Kind.APPLICATION, link=f'/admin/transactions/{txn.reference}')
+                              Notification.Kind.APPLICATION, link=facilities.admin_link(txn))
         return Response({'transaction': TransactionSerializer(txn).data}, status=status.HTTP_201_CREATED)
 
 
@@ -121,6 +144,9 @@ class UploadReceiptView(CsrfAPIView):
 
     def post(self, request, reference):
         txn = get_object_or_404(Transaction, reference=reference, customer=request.user)
+        if txn.is_facility:
+            return error('Loans and hire-purchase are repaid by instalment. Upload the receipt against the '
+                         'instalment instead.', 'facility_repayment')
         if txn.is_final:
             return error('This payment has already been reviewed.', 'already_decided')
         serializer = ReceiptSerializer(data=request.data)
@@ -254,9 +280,10 @@ class ApproveView(ReviewActionView):
     permission_classes = [IsSuperAdmin]
 
     def act(self, request, txn):
-        serializer = ReviewSerializer(data=request.data)
+        serializer = ApproveSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        services.approve_payment(txn, request.user, serializer.validated_data['note'])
+        data = serializer.validated_data
+        services.approve_payment(txn, request.user, data['note'], data.get('interestRate'))
 
 
 class RejectView(ReviewActionView):
@@ -266,6 +293,82 @@ class RejectView(ReviewActionView):
         serializer = ReviewSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         services.reject_payment(txn, request.user, serializer.validated_data['note'])
+
+
+class DisburseView(AdminTransactionView):
+    """Any admin records that an approved loan was paid out (or the item delivered)."""
+
+    def post(self, request, reference):
+        serializer = DisburseSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            facilities.disburse(self.get_txn(reference), request.user, serializer.validated_data['reference'])
+        except facilities.FacilityError as exc:
+            return facility_error(exc)
+        return self.respond(reference)
+
+
+# ---- Repayments ----
+
+def facility_error(exc):
+    extra = {'errors': {exc.field: [exc.message]}} if exc.field else {}
+    return error(exc.message, exc.code, **extra)
+
+
+class RepaymentReceiptUploadView(CsrfAPIView):
+    permission_classes = [IsCustomer]
+    parser_classes = [MultiPartParser, FormParser]
+    throttle_scope = 'uploads'
+
+    def post(self, request, pk):
+        rep = get_object_or_404(Repayment, pk=pk, facility__customer=request.user)
+        serializer = ReceiptSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            facilities.upload_repayment_receipt(request.user, rep, serializer.validated_data['file'])
+        except facilities.FacilityError as exc:
+            return facility_error(exc)
+        txn = get_object_or_404(CUSTOMER_QUERYSET, pk=rep.facility_id)
+        return Response({'transaction': TransactionSerializer(txn).data})
+
+
+class RepaymentReceiptFileView(CsrfAPIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        rep = get_object_or_404(Repayment.objects.select_related('facility'), pk=pk)
+        _visible_transaction(request, rep.facility.reference)
+        if not rep.receipt:
+            raise Http404
+        return serve_private_file(rep.receipt, rep.receipt_name)
+
+
+class AdminRepaymentActionView(CsrfAPIView):
+    permission_classes = [IsAdmin]
+    action_name = ''
+
+    def get_permissions(self):
+        if self.action_name in ('approve', 'reject'):
+            return [IsSuperAdmin()]
+        return super().get_permissions()
+
+    def post(self, request, pk):
+        rep = get_object_or_404(Repayment, pk=pk)
+        try:
+            if self.action_name == 'recommend':
+                serializer = RecommendSerializer(data=request.data)
+                serializer.is_valid(raise_exception=True)
+                facilities.recommend_repayment(rep, request.user, serializer.validated_data['decision'] == 'approve',
+                                               serializer.validated_data['note'])
+            else:
+                serializer = ReviewSerializer(data=request.data)
+                serializer.is_valid(raise_exception=True)
+                action = facilities.approve_repayment if self.action_name == 'approve' else facilities.reject_repayment
+                action(rep, request.user, serializer.validated_data['note'])
+        except facilities.FacilityError as exc:
+            return facility_error(exc)
+        txn = get_object_or_404(ADMIN_QUERYSET, pk=rep.facility_id)
+        return Response({'transaction': AdminTransactionSerializer(txn).data})
 
 
 # ---- Admin: collection bank accounts ----

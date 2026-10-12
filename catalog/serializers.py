@@ -2,6 +2,8 @@ import re
 
 from rest_framework import serializers
 
+from payments.facilities import repayment_frequencies
+
 from .models import Product
 
 HIRE_PURCHASE_CATEGORIES = ['Phones & gadgets', 'Laptops & computers', 'Home appliances', 'Other electronics',
@@ -34,18 +36,24 @@ class ProductSerializer(serializers.ModelSerializer):
     benefits = serializers.JSONField(required=False)
     clauses = serializers.JSONField(required=False)
     requirements = serializers.JSONField(required=False)
+    interestRate = serializers.DecimalField(source='interest_rate', max_digits=5, decimal_places=2, min_value=0,
+                                            max_value=100, required=False, allow_null=True)
 
     class Meta:
         model = Product
         fields = ['id', 'name', 'category', 'type', 'description', 'minAmount', 'maxAmount', 'duration', 'frequency',
                   'termOptions', 'expectedReturn', 'benefits', 'clauses', 'requirements', 'requiredDocuments',
-                  'itemCategories', 'status']
+                  'itemCategories', 'interestRate', 'status']
 
     def to_representation(self, product):
         data = super().to_representation(product)
         data['minAmount'] = float(product.min_amount)
         data['maxAmount'] = float(product.max_amount)
         data['expectedReturn'] = product.expected_return or None
+        data['interestRate'] = float(product.interest_rate) if product.interest_rate is not None else None
+        if product.needs_application:
+            # How the customer can choose to repay, read from the frequency text
+            data['repaymentFrequencies'] = repayment_frequencies(product.frequency)
         return data
 
     def validate_name(self, value):

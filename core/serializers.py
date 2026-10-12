@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from accounts.serializers import person_name
+
 from .models import Agent, PlatformSettings
 
 TIMEZONES = ['Africa/Lagos', 'UTC']
@@ -21,7 +23,7 @@ class AgentSerializer(serializers.ModelSerializer):
         read_only_fields = ['code']
 
     def validate_name(self, value):
-        return required_text(value, 'Agent name is required.')
+        return person_name(value, 'Agent name')
 
     def validate_phone(self, value):
         return required_text(value, 'Phone number is required.')

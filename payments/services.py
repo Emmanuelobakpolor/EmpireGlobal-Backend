@@ -12,7 +12,7 @@ from accounts.models import Role, User
 from core import audit
 
 from .models import BALANCE_FIELD_BY_TYPE, Notification, SlipEvent, Transaction
-from . import emails
+from . import emails, facilities
 from .notify import customer_link, notify, notify_admins, payment_review_link
 
 ROLE_LABELS = {Role.SUPER_ADMIN: 'Super Admin', Role.ADMIN: 'Admin'}
@@ -62,7 +62,8 @@ def _locked(txn):
 def _require_reviewable(txn):
     if txn.is_final:
         raise ReviewError('A Super Admin has already made the final decision on this payment.', 'already_decided')
-    if not txn.receipt_uploaded_at:
+    # Loan and hire-purchase applications are reviewed on their documents; nothing is paid up front
+    if not txn.receipt_uploaded_at and not txn.is_facility:
         raise ReviewError('The customer has not uploaded a receipt for this payment yet.', 'no_receipt')
 
 
@@ -72,17 +73,20 @@ def recommend(txn, admin, approve, note=''):
         _require_reviewable(txn)
         action = SlipEvent.Action.RECOMMENDED_APPROVAL if approve else SlipEvent.Action.RECOMMENDED_REJECTION
         _event(txn, admin, action, note)
-        _audit(admin, txn, f'Payment Recommended for {"Approval" if approve else "Rejection"}',
+        what = 'application' if txn.is_facility else 'payment'
+        _audit(admin, txn, f'{what.title()} Recommended for {"Approval" if approve else "Rejection"}',
                'info' if approve else 'warning',
-               f'Recommended {"approval" if approve else "rejection"} of {txn.product_name} payment of '
+               f'Recommended {"approval" if approve else "rejection"} of {txn.product_name} {what} of '
                f'{naira(txn.amount)} for {txn.customer.full_name}. Awaiting Super Admin final approval.'
                + (f' Note: {note}' if note else ''))
         notify_admins(
-            'Payment awaiting your final approval' if approve else 'Payment flagged for rejection',
+            f'{what.title()} awaiting your final approval' if approve else f'{what.title()} flagged for rejection',
             f"{admin.full_name} recommended {'approving' if approve else 'rejecting'} {txn.customer.full_name}'s "
-            f'{txn.product_name} payment of {naira(txn.amount)} ({txn.reference}).',
-            Notification.Kind.PAYMENT, Notification.Type.INFO if approve else Notification.Type.WARNING,
-            link=payment_review_link(txn), roles=(Role.SUPER_ADMIN,), exclude=admin,
+            f'{txn.product_name} {what} of {naira(txn.amount)} ({txn.reference}).',
+            Notification.Kind.APPLICATION if txn.is_facility else Notification.Kind.PAYMENT,
+            Notification.Type.INFO if approve else Notification.Type.WARNING,
+            link=facilities.admin_link(txn) if txn.is_facility else payment_review_link(txn),
+            roles=(Role.SUPER_ADMIN,), exclude=admin,
         )
     return txn
 
@@ -90,18 +94,28 @@ def recommend(txn, admin, approve, note=''):
 def _tell_recommenders(txn, decider, approved):
     """Let the admins who recommended this payment know the final outcome."""
     recommender_ids = txn.slip_events.filter(action__startswith='recommended_').values_list('actor', flat=True)
+    what = 'application' if txn.is_facility else 'payment'
+    link = facilities.admin_link(txn) if txn.is_facility else payment_review_link(txn)
     for admin in User.objects.filter(pk__in=recommender_ids).exclude(pk=decider.pk):
-        notify(admin, f"Payment you reviewed was {'approved' if approved else 'rejected'}",
+        notify(admin, f"{what.title()} you reviewed was {'approved' if approved else 'rejected'}",
                f"{decider.full_name} gave the final decision on {txn.customer.full_name}'s {txn.product_name} "
-               f'payment ({txn.reference}).', Notification.Kind.PAYMENT,
-               Notification.Type.SUCCESS if approved else Notification.Type.ERROR, link=payment_review_link(txn))
+               f'{what} ({txn.reference}).', Notification.Kind.PAYMENT,
+               Notification.Type.SUCCESS if approved else Notification.Type.ERROR, link=link)
 
 
-def approve_payment(txn, super_admin, note=''):
-    """Final approval: credit the customer's balance, all or nothing."""
+def approve_payment(txn, super_admin, note='', interest_rate=None):
+    """Final approval: credit the customer's balance, all or nothing. For a loan or hire-purchase
+    application, approve it at `interest_rate` (or the product's rate) instead."""
     with db_transaction.atomic():
         txn = _locked(txn)
         _require_reviewable(txn)
+        if txn.is_facility:
+            try:
+                facilities.approve_application(txn, super_admin, note, interest_rate)
+            except facilities.FacilityError as exc:
+                raise ReviewError(exc.message, exc.code) from exc
+            _tell_recommenders(txn, super_admin, approved=True)
+            return txn
         txn.status = Transaction.Status.APPROVED
         txn.decided_at = timezone.now()
         txn.save(update_fields=['status', 'decided_at'])
@@ -125,10 +139,15 @@ def approve_payment(txn, super_admin, note=''):
 
 
 def reject_payment(txn, super_admin, reason=''):
-    reason = reason.strip() or 'Payment could not be verified.'
+    reason = reason.strip()
     with db_transaction.atomic():
         txn = _locked(txn)
         _require_reviewable(txn)
+        if txn.is_facility:
+            facilities.reject_application(txn, super_admin, reason or 'The application did not meet our requirements.')
+            _tell_recommenders(txn, super_admin, approved=False)
+            return txn
+        reason = reason or 'Payment could not be verified.'
         txn.status = Transaction.Status.REJECTED
         txn.decided_at = timezone.now()
         txn.rejection_reason = reason

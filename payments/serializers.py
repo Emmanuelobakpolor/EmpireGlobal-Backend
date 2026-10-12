@@ -1,24 +1,27 @@
 import json
+from datetime import timedelta
 from decimal import Decimal
-from calendar import monthrange
-from datetime import date
 
+from django.utils import timezone
 from rest_framework import serializers
 
-from accounts.serializers import NextOfKinField
+from accounts.serializers import NextOfKinField, person_name
 
+from . import facilities
+from .facilities import add_months  # noqa: F401 - imported from here by views
 from .files import validate_upload
-from .models import ApplicationDocument, BankAccount, FacilityAssignment, Notification, ProductType, Transaction
+from .models import (
+    ApplicationDocument,
+    BankAccount,
+    FacilityAssignment,
+    Notification,
+    ProductType,
+    Repayment,
+    Transaction,
+)
 
 NEEDS_NEXT_OF_KIN = {ProductType.SAVINGS, ProductType.INVESTMENT}
 GUARANTOR_FIELDS = ['fullName', 'phone', 'address', 'relationship', 'idType', 'idNumber']
-
-
-def add_months(start, months):
-    month = start.month - 1 + months
-    year = start.year + month // 12
-    month = month % 12 + 1
-    return date(year, month, min(start.day, monthrange(year, month)[1]))
 
 
 def money(value):
@@ -52,14 +55,62 @@ class TransactionSerializer(serializers.ModelSerializer):
     application = serializers.SerializerMethodField()
     receipt = serializers.SerializerMethodField()
     timeline = serializers.SerializerMethodField()
+    # Loans and hire-purchase: terms, the customer's account and the repayment schedule
+    facility = serializers.SerializerMethodField()
 
     class Meta:
         model = Transaction
         fields = [
             'id', 'reference', 'customerId', 'customerName', 'productId', 'productName', 'productType', 'amount',
             'date', 'termMonths', 'startDate', 'endDate', 'status', 'application', 'nextOfKin', 'termsAcceptedAt',
-            'rejectionReason', 'paymentAccount', 'receipt', 'timeline',
+            'rejectionReason', 'paymentAccount', 'receipt', 'timeline', 'facility',
         ]
+
+    def repayment_data(self, rep, today, account):
+        revealed = facilities.is_revealed(rep, today)
+        return {
+            'id': rep.pk,
+            'reference': f'{rep.facility.reference}-R{rep.number:02d}',
+            'number': rep.number,
+            'dueDate': rep.due_date.isoformat(),
+            'amount': money(rep.amount),
+            'state': facilities.repayment_state(rep, today),
+            # Where to pay appears only as the due date gets near, and stays until it's paid
+            'paymentAccount': account if revealed else None,
+            'opensOn': (rep.due_date - timedelta(days=facilities.REPAYMENT_NOTICE_DAYS)).isoformat(),
+            'paidTo': rep.paid_to,
+            'paidAt': rep.paid_at,
+            'rejectionReason': rep.rejection_reason,
+            'receipt': {
+                'fileName': rep.receipt_name, 'size': rep.receipt_size, 'uploadedAt': rep.receipt_uploaded_at,
+                'url': f'/api/repayments/{rep.pk}/receipt/' if rep.receipt else None,
+            } if rep.receipt_uploaded_at else None,
+        }
+
+    def get_facility(self, txn):
+        if not txn.is_facility:
+            return None
+        today = timezone.localdate()
+        reps = list(txn.repayments.all())
+        account = facilities.collection_account(txn) if any(facilities.is_revealed(r, today) for r in reps) else None
+        repayments = [self.repayment_data(r, today, account) for r in reps]
+        paid = sum((r.amount for r in reps if r.status == Repayment.Status.PAID), Decimal(0))
+        unpaid = [r for r in repayments if r['state'] != 'paid']
+        return {
+            'status': txn.facility_status,
+            'repaymentFrequency': txn.repayment_frequency,
+            'interestRate': float(txn.interest_rate) if txn.interest_rate is not None else None,
+            'totalRepayable': money(txn.total_repayable) if txn.total_repayable is not None else None,
+            'amountPaid': money(paid),
+            'outstanding': money(txn.total_repayable - paid) if txn.total_repayable is not None else None,
+            'disbursementAccount': txn.disbursement_account,
+            'disbursedAt': txn.disbursed_at,
+            'disbursementReference': txn.disbursement_reference,
+            'nextRepayment': unpaid[0] if unpaid else None,
+            'overdueCount': sum(1 for r in repayments if r['state'] == 'overdue'),
+            'noticeDays': facilities.REPAYMENT_NOTICE_DAYS,
+            'repayments': repayments,
+        }
 
     def get_amount(self, txn):
         return money(txn.amount)
@@ -89,6 +140,8 @@ class TransactionSerializer(serializers.ModelSerializer):
         }
 
     def get_timeline(self, txn):
+        if txn.is_facility:
+            return self.facility_timeline(txn)
         decided = txn.decided_at
         steps = [
             {'label': 'Application Submitted' if txn.application else 'Transaction Created', 'done': True, 'date': txn.created_at},
@@ -101,9 +154,35 @@ class TransactionSerializer(serializers.ModelSerializer):
         ]
         if txn.status == Transaction.Status.REJECTED:
             steps.append({'label': 'Payment Rejected', 'done': True, 'rejected': True, 'date': decided})
+        return self.format_steps(steps)
+
+    def facility_timeline(self, txn):
+        status = txn.facility_status
+        decided = txn.decided_at
+        approved = txn.status == Transaction.Status.APPROVED
+        completed_at = None
+        if status == 'completed':
+            completed_at = max((r.paid_at for r in txn.repayments.all() if r.paid_at), default=None)
+        steps = [
+            {'label': 'Application Submitted', 'done': True, 'date': txn.created_at},
+            {'label': 'Under Review', 'done': bool(decided), 'date': decided, 'current': status == 'under_review'},
+        ]
+        if txn.status == Transaction.Status.REJECTED:
+            steps.append({'label': 'Application Rejected', 'done': True, 'rejected': True, 'date': decided})
+            return self.format_steps(steps)
+        steps += [
+            {'label': 'Application Approved', 'done': approved, 'date': decided if approved else None},
+            {'label': 'Loan Disbursed' if txn.product_type == ProductType.LOAN else 'Item Delivered',
+             'done': bool(txn.disbursed_at), 'date': txn.disbursed_at, 'current': status == 'awaiting_disbursement'},
+            {'label': 'Repaying', 'done': status == 'completed', 'date': None, 'current': status == 'active'},
+            {'label': 'Fully Repaid', 'done': status == 'completed', 'date': completed_at},
+        ]
+        return self.format_steps(steps)
+
+    def format_steps(self, steps):
         for step in steps:
-            if step['date'] is None:
-                del step['date']
+            if step.get('date') is None:
+                step.pop('date', None)
             else:
                 step['date'] = serializers.DateTimeField().to_representation(step['date'])
         return steps
@@ -123,6 +202,14 @@ class AdminTransactionSerializer(TransactionSerializer):
             for e in txn.slip_events.all()
         ]
 
+    def repayment_data(self, rep, today, account):
+        data = super().repayment_data(rep, today, account)
+        data['trail'] = [
+            {'action': e.action, 'by': e.actor_name, 'role': e.actor_role, 'at': e.at, **({'note': e.note} if e.note else {})}
+            for e in rep.events.all()
+        ]
+        return data
+
 
 def _text(value, max_length=255):
     return value.strip()[:max_length] if isinstance(value, str) else ''
@@ -138,6 +225,9 @@ class CreateTransactionSerializer(serializers.Serializer):
     application = serializers.JSONField(required=False, allow_null=True)
     nextOfKin = NextOfKinField(required=False, allow_null=True)
     termsAccepted = serializers.BooleanField(required=False, default=False)
+    # Loans and hire-purchase: how they'll repay, and their own bank account
+    repaymentFrequency = serializers.CharField(required=False, allow_blank=True, max_length=16)
+    disbursementAccount = serializers.JSONField(required=False, allow_null=True)
 
     def validate_productId(self, code):
         from catalog.models import Product
@@ -172,8 +262,15 @@ class CreateTransactionSerializer(serializers.Serializer):
 
         if product.needs_application:
             attrs['application'], attrs['documents'] = self.check_application(product, attrs.get('application') or {}, errors)
+            frequencies = facilities.repayment_frequencies(product.frequency)
+            frequency = attrs.get('repaymentFrequency') or (frequencies[0] if len(frequencies) == 1 else '')
+            if frequency not in frequencies:
+                errors['repaymentFrequency'] = [f'Choose how you will repay: {", ".join(frequencies)}.']
+            attrs['repaymentFrequency'] = frequency
+            attrs['disbursementAccount'] = self.check_bank_account(attrs.get('disbursementAccount'), errors)
         else:
             attrs['application'], attrs['documents'] = None, []
+            attrs['repaymentFrequency'], attrs['disbursementAccount'] = '', None
 
         if errors:
             raise serializers.ValidationError(errors)
@@ -186,6 +283,11 @@ class CreateTransactionSerializer(serializers.Serializer):
         missing = [k for k, v in clean_guarantor.items() if not v]
         if missing:
             errors['guarantor'] = [f'Guarantor details are incomplete: {", ".join(missing)}.']
+        else:
+            try:
+                clean_guarantor['fullName'] = person_name(clean_guarantor['fullName'])
+            except serializers.ValidationError:
+                errors['guarantor'] = ["Enter the guarantor's first name and last name."]
         application = {'guarantor': clean_guarantor}
 
         if product.type == ProductType.HIRE_PURCHASE:
@@ -211,6 +313,26 @@ class CreateTransactionSerializer(serializers.Serializer):
         return application, documents
 
 
+    def check_bank_account(self, raw, errors):
+        """The customer's own account: where a loan is paid out to."""
+        raw = raw if isinstance(raw, dict) else {}
+        account = {
+            'bankName': _text(raw.get('bankName'), 100),
+            'accountNumber': _text(raw.get('accountNumber'), 20),
+            'accountName': _text(raw.get('accountName'), 150),
+        }
+        problems = []
+        if not account['bankName']:
+            problems.append('Bank name is required.')
+        if not (len(account['accountNumber']) == 10 and account['accountNumber'].isdigit()):
+            problems.append('Enter the 10-digit NUBAN account number.')
+        if not account['accountName']:
+            problems.append('Account name is required.')
+        if problems:
+            errors['disbursementAccount'] = problems
+        return account
+
+
 class ReceiptSerializer(serializers.Serializer):
     file = serializers.FileField()
 
@@ -224,6 +346,16 @@ class ReviewSerializer(serializers.Serializer):
 
 class RecommendSerializer(ReviewSerializer):
     decision = serializers.ChoiceField(choices=['approve', 'reject'])
+
+
+class ApproveSerializer(ReviewSerializer):
+    # Loans and hire-purchase: the rate to charge, when it isn't the product's own
+    interestRate = serializers.DecimalField(max_digits=5, decimal_places=2, min_value=0, max_value=100,
+                                            required=False, allow_null=True)
+
+
+class DisburseSerializer(serializers.Serializer):
+    reference = serializers.CharField(max_length=100)
 
 
 class NotificationSerializer(serializers.ModelSerializer):

@@ -8,6 +8,22 @@ from payments.files import validate_upload
 from .models import Role, Status, User, normalize_agent_code
 
 
+def person_name(value, label='Full name'):
+    """A person's name as forms collect it: a first name and a last name, saved together."""
+    value = ' '.join(value.split()) if isinstance(value, str) else ''
+    if not value:
+        raise serializers.ValidationError(f'{label} is required.')
+    if len(value.split(' ')) < 2:
+        raise serializers.ValidationError('Enter both a first name and a last name.')
+    return value
+
+
+def split_name(full_name):
+    """(first name, last name) from a stored full name; everything after the first word is the last name."""
+    first, _, last = (full_name or '').strip().partition(' ')
+    return first, last.strip()
+
+
 NEXT_OF_KIN_FIELDS = {
     'fullName': 'Full name is required.',
     'phone': 'Phone number is required.',
@@ -31,6 +47,11 @@ class NextOfKinField(serializers.JSONField):
                 errors[key] = message
             elif len(item) > 255:
                 errors[key] = 'Must be 255 characters or fewer.'
+            elif key == 'fullName':
+                try:
+                    value[key] = person_name(item)
+                except serializers.ValidationError as exc:
+                    errors[key] = exc.detail[0]
             else:
                 value[key] = item.strip()
         if errors:
@@ -56,6 +77,8 @@ class UserSerializer(serializers.ModelSerializer):
 
     id = serializers.CharField(source='public_id', read_only=True)
     fullName = serializers.CharField(source='full_name', max_length=150)
+    firstName = serializers.SerializerMethodField()
+    lastName = serializers.SerializerMethodField()
     agentCode = serializers.CharField(source='agent_code', read_only=True)
     authProvider = serializers.CharField(source='auth_provider', read_only=True)
     emailVerified = serializers.BooleanField(source='email_verified', read_only=True)
@@ -73,7 +96,7 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['id', 'fullName', 'email', 'phone', 'agentCode', 'role', 'status', 'authProvider', 'emailVerified',
+        fields = ['id', 'fullName', 'firstName', 'lastName', 'email', 'phone', 'agentCode', 'role', 'status', 'authProvider', 'emailVerified',
                   'joined', 'nextOfKin', 'mustChangePassword', 'savingsBalance', 'investmentBalance', 'outstandingLoan',
                   'totalBalance', 'avatarUrl', 'hasPassword']
         # Email changes go through the confirmation-code flow; role and status are set by admins
@@ -86,14 +109,17 @@ class UserSerializer(serializers.ModelSerializer):
     def get_avatarUrl(self, user):
         return avatar_url(user)
 
+    def get_firstName(self, user):
+        return split_name(user.full_name)[0]
+
+    def get_lastName(self, user):
+        return split_name(user.full_name)[1]
+
     def get_hasPassword(self, user):
         return user.has_usable_password()
 
     def validate_fullName(self, value):
-        value = value.strip()
-        if not value:
-            raise serializers.ValidationError('Full name is required.')
-        return value
+        return person_name(value)
 
 
 class SignupDetailsSerializer(serializers.Serializer):
@@ -104,10 +130,7 @@ class SignupDetailsSerializer(serializers.Serializer):
     agentCode = serializers.CharField(max_length=16, required=False, allow_blank=True)
 
     def validate_fullName(self, value):
-        value = value.strip()
-        if not value:
-            raise serializers.ValidationError('Full name is required.')
-        return value
+        return person_name(value)
 
     def validate_phone(self, value):
         value = value.strip()
@@ -226,10 +249,7 @@ class AdminAccountSerializer(serializers.ModelSerializer):
         return avatar_url(user)
 
     def validate_fullName(self, value):
-        value = value.strip()
-        if not value:
-            raise serializers.ValidationError('Full name is required.')
-        return value
+        return person_name(value)
 
     def validate_email(self, value):
         value = value.strip().lower()
@@ -301,10 +321,7 @@ class SetupSuperAdminSerializer(serializers.Serializer):
         return value
 
     def validate_fullName(self, value):
-        value = value.strip()
-        if not value:
-            raise serializers.ValidationError('Full name is required.')
-        return value
+        return person_name(value)
 
     def validate(self, attrs):
         candidate = User(email=attrs['email'], full_name=attrs['fullName'])

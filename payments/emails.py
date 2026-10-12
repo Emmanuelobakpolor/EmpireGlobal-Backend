@@ -130,3 +130,109 @@ def send_withdrawal_paid(wd):
         'contact support with the references above.',
     ])
     _send_after_commit(f'Withdrawal paid: {naira(wd.payout_amount)} ({wd.reference})', message, wd.customer.email)
+
+
+# ---- Loans and hire-purchase ----
+
+def _facility_lines(txn):
+    lines = [
+        f'Product:        {txn.product_name}',
+        f'Amount:         {naira(txn.amount)}',
+        f'Term:           {txn.term_months} month(s), repaid {txn.get_repayment_frequency_display().lower()}',
+    ]
+    if txn.interest_rate is not None:
+        lines += [f'Interest:       {txn.interest_rate}% a month (flat)',
+                  f'Total to repay: {naira(txn.total_repayable)}']
+    lines.append(f'Reference:      {txn.reference}')
+    return lines
+
+
+def send_application_approved(txn):
+    account = txn.disbursement_account or {}
+    if txn.product_type == 'loan':
+        next_step = (f'We will pay {naira(txn.amount)} into your {account.get("bankName", "")} account '
+                     f'{account.get("accountNumber", "")} ({account.get("accountName", "")}) shortly.')
+    else:
+        next_step = 'We will contact you to arrange delivery of your item.'
+    message = '\n'.join([
+        f'Hi {txn.customer.full_name},', '',
+        f'Your {txn.product_name} application has been approved.', '',
+        *_facility_lines(txn), '',
+        next_step,
+        'Your repayment schedule starts on the day it is ' + ('paid out.' if txn.product_type == 'loan' else 'delivered.'),
+        f'View it in your account: {_transaction_link(txn)}',
+    ])
+    _send_after_commit(f'Application approved ({txn.reference})', message, txn.customer.email)
+
+
+def send_application_rejected(txn, reason):
+    message = '\n'.join([
+        f'Hi {txn.customer.full_name},', '',
+        f'Your {txn.product_name} application ({txn.reference}) for {naira(txn.amount)} was not approved.', '',
+        f'Reason: {reason}', '',
+        'Contact support if you have questions.',
+    ])
+    _send_after_commit(f'Application not approved ({txn.reference})', message, txn.customer.email)
+
+
+def send_facility_started(txn, plan):
+    loan = txn.product_type == 'loan'
+    first_due, first_amount = plan[0]
+    message = '\n'.join([
+        f'Hi {txn.customer.full_name},', '',
+        (f'{naira(txn.amount)} has been paid into your bank account.' if loan
+         else f'Your {txn.product_name} item has been delivered.'), '',
+        *_facility_lines(txn),
+        f'{"Transfer ref" if loan else "Delivery note"}:   {txn.disbursement_reference}', '',
+        f'Instalments:    {len(plan)} of about {naira(first_amount)}',
+        f'First due:      {first_due:%d %b %Y}',
+        f'Last due:       {plan[-1][0]:%d %b %Y}', '',
+        'The account to pay each instalment into appears in your account a few days before it is due, '
+        'and we will remind you.',
+        f'View your repayment schedule: {_transaction_link(txn)}',
+    ])
+    _send_after_commit(f'{"Loan disbursed" if loan else "Item delivered"} ({txn.reference})', message,
+                       txn.customer.email)
+
+
+def send_repayment_reminder(txn, repayments, account):
+    lines = [f'Hi {txn.customer.full_name},', '', f'You have a repayment coming up on {txn.product_name}:', '']
+    for rep in sorted(repayments, key=lambda r: r.due_date):
+        lines.append(f'  Instalment {rep.number}: {naira(rep.amount)} due {rep.due_date:%d %b %Y} '
+                     f'(narration {rep.reference})')
+    if account:
+        lines += ['', 'Pay into:',
+                  f'  Bank:           {account["bankName"]}',
+                  f'  Account number: {account["accountNumber"]}',
+                  f'  Account name:   {account["accountName"]}']
+    lines += ['', f'Then upload your receipt here: {_transaction_link(txn)}']
+    _send_after_commit(f'Repayment due soon ({txn.reference})', '\n'.join(lines), txn.customer.email)
+
+
+def send_repayment_confirmed(rep, outstanding, completed):
+    txn = rep.facility
+    lines = [
+        f'Hi {txn.customer.full_name},', '',
+        f'Your repayment of {naira(rep.amount)} for {txn.product_name} (instalment {rep.number}) has been confirmed.', '',
+        f'Outstanding: {naira(outstanding)}',
+    ]
+    if completed:
+        lines += ['', 'You have now fully repaid this facility. Thank you!']
+        if txn.product_type == 'hire-purchase':
+            lines.append('Ownership of the item is now yours.')
+    lines += ['', f'View it in your account: {_transaction_link(txn)}']
+    _send_after_commit(f'Repayment confirmed: {naira(rep.amount)} ({rep.reference})', '\n'.join(lines),
+                       txn.customer.email)
+
+
+def send_repayment_rejected(rep, reason):
+    txn = rep.facility
+    message = '\n'.join([
+        f'Hi {txn.customer.full_name},', '',
+        f'We could not confirm your repayment of {naira(rep.amount)} for {txn.product_name} '
+        f'(instalment {rep.number}, {rep.reference}).', '',
+        f'Reason: {reason}', '',
+        'The instalment is still unpaid. You can upload a clearer receipt or contact support.',
+        f'View it in your account: {_transaction_link(txn)}',
+    ])
+    _send_after_commit(f'Repayment not confirmed ({rep.reference})', message, txn.customer.email)

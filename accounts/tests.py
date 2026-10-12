@@ -358,13 +358,13 @@ class AdminManagementTests(AuthTestBase):
 
     def test_create_validates(self):
         self.login('boss@empireglobal.com')
-        res = self.post('/api/admin/admins/', {'fullName': 'X', 'email': 'staff@empireglobal.com', 'role': 'customer', 'password': ''})
+        res = self.post('/api/admin/admins/', {'fullName': 'Xavi Ola', 'email': 'staff@empireglobal.com', 'role': 'customer', 'password': ''})
         self.assertEqual(res.status_code, 400)
         self.assertEqual(set(res.json()), {'email', 'role'})
         self.assertEqual(res.json()['email'], ['An account with this email already exists.'])
-        res = self.post('/api/admin/admins/', {'fullName': 'X', 'email': 'STAFF@empireglobal.com', 'role': 'admin', 'password': 'Temp-Pass-123'})
+        res = self.post('/api/admin/admins/', {'fullName': 'Xavi Ola', 'email': 'STAFF@empireglobal.com', 'role': 'admin', 'password': 'Temp-Pass-123'})
         self.assertIn('email', res.json())
-        res = self.post('/api/admin/admins/', {'fullName': 'X', 'email': 'x@empireglobal.com', 'role': 'admin', 'password': '123'})
+        res = self.post('/api/admin/admins/', {'fullName': 'Xavi Ola', 'email': 'x@empireglobal.com', 'role': 'admin', 'password': '123'})
         self.assertIn('password', res.json())
 
     def test_deactivate_signs_admin_out_and_blocks_login(self):
@@ -559,7 +559,7 @@ class MustChangePasswordTests(AuthTestBase):
         self.post('/api/admin/auth/login/', {'email': 'boss@empireglobal.com', 'password': PASSWORD})
 
     def test_new_admin_must_choose_own_password(self):
-        self.post('/api/admin/admins/', {'fullName': 'New', 'email': 'new@empireglobal.com', 'role': 'admin', 'password': 'Temp-Pass-123'})
+        self.post('/api/admin/admins/', {'fullName': 'New Admin', 'email': 'new@empireglobal.com', 'role': 'admin', 'password': 'Temp-Pass-123'})
         self.post('/api/auth/logout/')
 
         res = self.post('/api/admin/auth/login/', {'email': 'new@empireglobal.com', 'password': 'Temp-Pass-123'})

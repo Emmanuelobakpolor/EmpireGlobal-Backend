@@ -41,10 +41,10 @@ class AgentTests(CoreTestBase):
 
     def test_any_admin_manages_agents(self):
         self.login('staff@empireglobal.com')
-        res = self.post('/api/admin/agents/', {'name': ' Kunle ', 'phone': '0803', 'location': 'Ikorodu', 'status': 'inactive', 'code': 'AG-1'})
+        res = self.post('/api/admin/agents/', {'name': ' Kunle  Ade ', 'phone': '0803', 'location': 'Ikorodu', 'status': 'inactive', 'code': 'AG-1'})
         self.assertEqual(res.status_code, 201)
         agent = res.json()['agent']
-        self.assertEqual((agent['code'], agent['name'], agent['status']), ('AG-1001', 'Kunle', 'active'))
+        self.assertEqual((agent['code'], agent['name'], agent['status']), ('AG-1001', 'Kunle Ade', 'active'))
 
         res = self.patch('/api/admin/agents/ag-1001/', {'location': 'Ikeja', 'status': 'inactive', 'code': 'AG-5'})
         self.assertEqual(res.status_code, 200)

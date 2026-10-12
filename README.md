@@ -229,7 +229,8 @@ existing sessions.
 
 A customer creates a transaction, pays into the account shown, and uploads the receipt. Admins view
 and recommend; only a Super Admin's final approval credits the customer's balance (savings, thrift →
-savings; investment → investment; loan → outstanding loan; hire-purchase → no balance). Approval,
+savings; investment → investment). Loans and hire-purchase work differently: see *Loans and
+hire-purchase* below. Approval,
 the balance credit, the review-trail entry and the customer's notification are saved together or
 not at all, and a payment can only be decided once.
 
@@ -292,6 +293,51 @@ before going live (production starts with an empty database anyway).
 
 **Payment account.** When a transaction is created the server records which collection account the
 customer must pay into (`paymentAccount`). Later changes to bank accounts don't alter it.
+
+## Loans and hire-purchase
+
+Credit facilities the customer repays by instalments (`payments/facilities.py`).
+
+1. **Apply.** Documents, guarantor, the item (hire-purchase), a repayment frequency (one the product's
+   frequency text offers: daily, weekly, monthly or one-time) and the customer's **own bank account**
+   (`disbursementAccount: {bankName, accountNumber (10 digits), accountName}`), where a loan is paid out.
+   Nothing is paid up front: the transaction starts `pending` with `facility.status = under_review` and
+   no `paymentAccount`.
+2. **Review.** Admins recommend; a Super Admin approves (`interestRate`, % per month flat, or the
+   product's `interestRate` when not given; required if neither) or rejects. Approval fixes
+   `totalRepayable = amount × (1 + rate% × months)`. Status → `awaiting_disbursement`.
+3. **Disburse.** Any admin records the transfer reference (loan) or delivery note (hire-purchase). The
+   schedule is created from that day, split evenly (the last instalment absorbs rounding). For loans the
+   customer's `outstandingLoan` goes up by the total repayable.
+4. **Repay.** Each instalment's collection account (the facility's bank account) is shown to the
+   customer only from 7 days before its due date (`REPAYMENT_NOTICE_DAYS`) until it's paid; uploads
+   are refused before then. Admins recommend, a Super Admin confirms (loan balance goes down) or
+   rejects (the instalment is unpaid again). When every instalment is confirmed the facility is
+   `completed`.
+
+**Reminders.** Customers are notified and emailed once per instalment as it comes into the 7-day
+window, and once when it goes overdue (admins are told too). This runs whenever a customer loads their
+transactions, and with `python manage.py send_repayment_reminders`; run that daily in production.
+
+| Method | Endpoint | Who | Notes |
+| --- | --- | --- | --- |
+| POST | `/api/admin/transactions/<reference>/approve/` | Super Admin | Also takes `interestRate` for applications |
+| POST | `/api/admin/transactions/<reference>/disburse/` | Any admin | `reference` |
+| POST | `/api/repayments/<id>/upload-receipt/` | Customer | Multipart `file`; returns `{transaction}` |
+| GET | `/api/repayments/<id>/receipt/` | Owner or admin | Streams the receipt |
+| POST | `/api/admin/repayments/<id>/recommend/` | Any admin | `decision, note?` |
+| POST | `/api/admin/repayments/<id>/approve/`, `.../reject/` | Super Admin | `note` (the reason, for a rejection) |
+
+Loan and hire-purchase transactions carry a `facility` object: `status, repaymentFrequency,
+interestRate, totalRepayable, amountPaid, outstanding, disbursementAccount, disbursedAt,
+disbursementReference, nextRepayment, overdueCount, noticeDays, repayments` (each with `state`:
+`upcoming`, `due`, `overdue`, `pending` or `paid`, and `paymentAccount` only once it's due).
+
+## Names
+
+Every form asks for a first name and a last name. The API still takes and stores one `fullName`
+(and an agent's `name`, and `fullName` for next of kin and guarantors), but refuses it unless it has at
+least two words. `/api/auth/me/` also returns `firstName` and `lastName` (the first word, and the rest).
 
 ## Withdrawals
 

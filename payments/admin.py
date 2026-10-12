@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Notification, SlipEvent, Transaction, Withdrawal, WithdrawalEvent
+from .models import Notification, Repayment, SlipEvent, Transaction, Withdrawal, WithdrawalEvent
 
 
 class SlipEventInline(admin.TabularInline):
@@ -10,6 +10,17 @@ class SlipEventInline(admin.TabularInline):
     can_delete = False
 
 
+class RepaymentInline(admin.TabularInline):
+    model = Repayment
+    extra = 0
+    fields = ['number', 'due_date', 'amount', 'status', 'receipt_uploaded_at', 'paid_at']
+    readonly_fields = fields
+    can_delete = False
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(Transaction)
 class TransactionAdmin(admin.ModelAdmin):
     list_display = ['reference', 'customer', 'product_name', 'amount', 'status', 'created_at']
@@ -17,7 +28,7 @@ class TransactionAdmin(admin.ModelAdmin):
     search_fields = ['reference', 'customer__email', 'customer__full_name', 'customer__public_id']
     # Status and amounts change only through the review flow, which credits balances
     readonly_fields = [f.name for f in Transaction._meta.fields]
-    inlines = [SlipEventInline]
+    inlines = [SlipEventInline, RepaymentInline]
 
     def has_add_permission(self, request):
         return False

@@ -24,6 +24,9 @@ GUARANTOR = {'fullName': 'Kemi Ade', 'phone': '0803', 'address': '2 Broad St', '
 LOAN_DOCUMENTS = ['passport', 'proofOfAddress', 'proofOfId', 'applicationForm', 'proofOfIncome',
                   'proofOfEmployment', 'guarantorId']
 HP_DOCUMENTS = ['passport', 'proofOfAddress', 'proofOfId', 'applicationForm', 'guarantorId']
+# The customer's own account, where a loan is paid out to
+BANK = {'bankName': 'GTBank', 'accountNumber': '0123456789', 'accountName': 'Test User'}
+HP_ITEM = {'category': 'Phones & gadgets', 'description': 'Galaxy A15'}
 MEDIA = tempfile.mkdtemp()
 
 
@@ -75,7 +78,7 @@ class PaymentTestBase(TestCase):
     def create_application(self, client=None, product='p7', documents=LOAN_DOCUMENTS, **overrides):
         """A loan or hire-purchase application, sent as multipart with its documents."""
         payload = {'productId': product, 'amount': 50000, 'application': {'guarantor': GUARANTOR}, 'termsAccepted': True,
-                   **overrides}
+                   'disbursementAccount': BANK, **overrides}
         form = {'payload': json.dumps(payload)}
         for key in documents:
             form[f'document.{key}'] = SimpleUploadedFile(f'{key}.pdf', PDF)
@@ -117,8 +120,9 @@ class CustomerTransactionTests(PaymentTestBase):
         BankAccount.objects.filter(code='ba2').update(account_number='9999999999')
         again = self.client_for(self.customer).get(f'/api/transactions/{txn["reference"]}/').json()['transaction']
         self.assertEqual(again['paymentAccount']['accountNumber'], '3005085503')
+        # Loans aren't paid for up front: each repayment shows where to pay as it comes due
         loan = self.create_application().json()['transaction']
-        self.assertEqual(loan['paymentAccount']['accountNumber'], '3002971322')
+        self.assertIsNone(loan['paymentAccount'])
 
     def test_product_rules(self):
         cases = [
@@ -221,10 +225,12 @@ class ApplicationDocumentTests(PaymentTestBase):
     def test_guarantor_and_item_are_checked(self):
         res = self.create_application(application={'guarantor': {**GUARANTOR, 'idNumber': ''}})
         self.assertIn('guarantor', res.json())
-        res = self.create_application(product='p9', documents=HP_DOCUMENTS, termMonths=6,
+        res = self.create_application(application={'guarantor': {**GUARANTOR, 'fullName': 'Kemi'}})
+        self.assertEqual(res.json()['guarantor'], ["Enter the guarantor's first name and last name."])
+        res = self.create_application(product='p9', documents=HP_DOCUMENTS, termMonths=6, repaymentFrequency='monthly',
                                       application={'guarantor': GUARANTOR, 'item': {'category': 'Tricycle', 'description': 'Keke'}})
         self.assertIn('item', res.json())
-        res = self.create_application(product='p9', documents=HP_DOCUMENTS, termMonths=6,
+        res = self.create_application(product='p9', documents=HP_DOCUMENTS, termMonths=6, repaymentFrequency='monthly',
                                       application={'guarantor': GUARANTOR, 'item': {'category': 'Phones & gadgets', 'description': 'Galaxy A15'}})
         self.assertEqual(res.status_code, 201, res.content)
         self.assertEqual(res.json()['transaction']['application']['item']['category'], 'Phones & gadgets')
@@ -287,15 +293,16 @@ class ReviewTests(PaymentTestBase):
     def test_balance_by_product_type(self):
         boss = self.client_for(self.boss)
         investment = self.paid_transaction(productId='p3', amount=100000, termMonths=12)
-        loan = self.paid(self.create_application(amount=10000))
-        hire = self.paid(self.create_application(
-            product='p9', documents=HP_DOCUMENTS, termMonths=6, amount=30000,
-            application={'guarantor': GUARANTOR, 'item': {'category': 'Phones & gadgets', 'description': 'Phone'}}))
+        loan = Transaction.objects.get(reference=self.create_application(amount=10000).json()['transaction']['reference'])
+        hire = Transaction.objects.get(reference=self.create_application(
+            product='p9', documents=HP_DOCUMENTS, termMonths=6, amount=30000, repaymentFrequency='monthly',
+            application={'guarantor': GUARANTOR, 'item': HP_ITEM}).json()['transaction']['reference'])
         for txn in (investment, loan, hire):
-            self.assertEqual(self.post(boss, self.url(txn, 'approve')).status_code, 200)
+            self.assertEqual(self.post(boss, self.url(txn, 'approve'), {'interestRate': 5}).status_code, 200)
         self.customer.refresh_from_db()
+        # A loan only counts as owed once it has been paid out
         self.assertEqual((self.customer.investment_balance, self.customer.outstanding_loan, self.customer.savings_balance),
-                         (Decimal('100000'), Decimal('10000'), Decimal('0')))
+                         (Decimal('100000'), Decimal('0'), Decimal('0')))
 
     def test_reject(self):
         txn = self.paid_transaction()
@@ -363,7 +370,7 @@ class BankAccountTests(PaymentTestBase):
 class AuditLogTests(PaymentTestBase):
     def test_actions_are_logged_by_the_server(self):
         boss = self.client_for(self.boss)
-        self.post(boss, '/api/admin/agents/', {'name': 'Kunle', 'phone': '0803', 'location': 'Ikorodu'})
+        self.post(boss, '/api/admin/agents/', {'name': 'Kunle Ade', 'phone': '0803', 'location': 'Ikorodu'})
         boss.patch(f'/api/admin/customers/{self.customer.public_id}/', {'status': 'suspended'}, format='json',
                    HTTP_X_CSRFTOKEN=boss.cookies['csrftoken'].value)
         logs = self.client_for(self.admin).get('/api/admin/audit-logs/').json()['auditLogs']
@@ -437,7 +444,7 @@ class NotificationTests(PaymentTestBase):
         txn = Transaction.objects.get(reference=self.create_application().json()['transaction']['reference'])
         self.assertIn('Application received', self.titles(self.customer))
         note = Notification.objects.get(recipient=self.boss, title='New loan application')
-        self.assertEqual((note.kind, note.link), ('application', f'/admin/transactions/{txn.reference}'))
+        self.assertEqual((note.kind, note.link), ('application', f'/admin/facilities/{txn.reference}'))
 
 
 class DepositEmailTests(PaymentTestBase):

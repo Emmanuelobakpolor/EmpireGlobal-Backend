@@ -22,14 +22,33 @@ REFERENCE_CODES = {
     ProductType.HIRE_PURCHASE: 'HP',
 }
 
-# Which customer balance an approved payment credits. Hire-purchase pays for goods,
-# so it doesn't move a balance.
+# Which customer balance an approved payment credits. Loans and hire-purchase are credit
+# facilities: they're repaid by instalments instead (see payments/facilities.py).
 BALANCE_FIELD_BY_TYPE = {
     ProductType.SAVINGS: 'savings_balance',
     ProductType.THRIFT: 'savings_balance',
     ProductType.INVESTMENT: 'investment_balance',
-    ProductType.LOAN: 'outstanding_loan',
 }
+
+# Products the customer borrows on and repays, rather than pays into
+FACILITY_TYPES = (ProductType.LOAN, ProductType.HIRE_PURCHASE)
+
+
+class RepaymentFrequency(models.TextChoices):
+    DAILY = 'daily', 'Daily'
+    WEEKLY = 'weekly', 'Weekly'
+    MONTHLY = 'monthly', 'Monthly'
+    # Paid back in one go at the end of the term (e.g. a salary advance on payday)
+    ONCE = 'once', 'One-time'
+
+
+class FacilityStatus(models.TextChoices):
+    UNDER_REVIEW = 'under_review', 'Under review'
+    # Approved; the loan is waiting to be paid out, or the item to be delivered
+    AWAITING_DISBURSEMENT = 'awaiting_disbursement', 'Awaiting disbursement'
+    ACTIVE = 'active', 'Repaying'
+    COMPLETED = 'completed', 'Fully repaid'
+    REJECTED = 'rejected', 'Rejected'
 
 
 def receipt_path(instance, filename):
@@ -81,6 +100,18 @@ class Transaction(models.Model):
     rejection_reason = models.CharField(max_length=500, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
 
+    # ---- Loans and hire-purchase only ----
+    facility_status = models.CharField(max_length=24, choices=FacilityStatus.choices, blank=True)
+    repayment_frequency = models.CharField(max_length=16, choices=RepaymentFrequency.choices, blank=True)
+    # Flat interest, percent of the amount per month of the term; fixed when the application is approved
+    interest_rate = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    total_repayable = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    # The customer's own account, entered on the application: where a loan is paid out to
+    disbursement_account = models.JSONField(null=True, blank=True)
+    disbursed_at = models.DateTimeField(null=True, blank=True)
+    # Bank transfer reference for a loan, delivery note for a hire-purchase item
+    disbursement_reference = models.CharField(max_length=100, blank=True)
+
     class Meta:
         ordering = ['-created_at']
 
@@ -90,6 +121,10 @@ class Transaction(models.Model):
     @property
     def is_final(self):
         return self.status in self.FINAL
+
+    @property
+    def is_facility(self):
+        return self.product_type in FACILITY_TYPES and bool(self.facility_status)
 
     @classmethod
     def new_reference(cls, product_type):
@@ -104,6 +139,60 @@ class Transaction(models.Model):
         if not self.reference:
             self.reference = self.new_reference(self.product_type)
         super().save(*args, **kwargs)
+
+
+class Repayment(models.Model):
+    """One instalment of a loan or hire-purchase: due on a date, paid by transfer, verified by admins."""
+
+    class Status(models.TextChoices):
+        SCHEDULED = 'scheduled', 'Scheduled'
+        # Receipt uploaded, awaiting verification
+        PENDING = 'pending', 'Pending verification'
+        PAID = 'paid', 'Paid'
+
+    facility = models.ForeignKey(Transaction, on_delete=models.CASCADE, related_name='repayments')
+    number = models.PositiveSmallIntegerField()
+    due_date = models.DateField()
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.SCHEDULED)
+    receipt = models.FileField(upload_to=receipt_path, blank=True)
+    receipt_name = models.CharField(max_length=255, blank=True)
+    receipt_size = models.PositiveIntegerField(null=True, blank=True)
+    receipt_uploaded_at = models.DateTimeField(null=True, blank=True)
+    # The collection account the customer paid into, as shown to them at the time
+    paid_to = models.JSONField(null=True, blank=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+    # Why the last receipt wasn't accepted; cleared when a new one is uploaded
+    rejection_reason = models.CharField(max_length=500, blank=True)
+    reminded_at = models.DateTimeField(null=True, blank=True)
+    overdue_notified_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['facility', 'number']
+        constraints = [models.UniqueConstraint(fields=['facility', 'number'], name='one_repayment_per_number')]
+
+    def __str__(self):
+        return self.reference
+
+    @property
+    def reference(self):
+        # Used as the transfer narration so admins can match the payment
+        return f'{self.facility.reference}-R{self.number:02d}'
+
+
+class RepaymentEvent(models.Model):
+    """One step in a repayment receipt's review."""
+
+    repayment = models.ForeignKey(Repayment, on_delete=models.CASCADE, related_name='events')
+    action = models.CharField(max_length=32)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
+    actor_name = models.CharField(max_length=150)
+    actor_role = models.CharField(max_length=16)
+    note = models.CharField(max_length=500, blank=True)
+    at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ['at', 'pk']
 
 
 class SlipEvent(models.Model):
