@@ -72,6 +72,7 @@ class PaymentTestBase(TestCase):
     def create(self, client=None, **overrides):
         """A Monthly Savings (p2) transaction."""
         body = {'productId': 'p2', 'amount': 20000, 'termMonths': 6, 'nextOfKin': NEXT_OF_KIN, 'termsAccepted': True,
+                'disbursementAccount': BANK,
                 **overrides}
         return self.post(client or self.client_for(self.customer), '/api/transactions/', body)
 
@@ -292,7 +293,8 @@ class ReviewTests(PaymentTestBase):
 
     def test_balance_by_product_type(self):
         boss = self.client_for(self.boss)
-        investment = self.paid_transaction(productId='p3', amount=100000, termMonths=12)
+        investment = self.paid_transaction(productId='p3', amount=100000, termMonths=12, interestOption='maturity',
+                                           disbursementAccount=BANK)
         loan = Transaction.objects.get(reference=self.create_application(amount=10000).json()['transaction']['reference'])
         hire = Transaction.objects.get(reference=self.create_application(
             product='p9', documents=HP_DOCUMENTS, termMonths=6, amount=30000, repaymentFrequency='monthly',

@@ -1,6 +1,7 @@
 import json
 
 from django.db import transaction as db_transaction
+from django.db.models import Count
 from django.http import Http404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -15,7 +16,7 @@ from accounts.views import CsrfAPIView, error
 from core import audit
 from core.models import AuditLog
 
-from . import facilities, services
+from . import facilities, investments, services
 from .files import serve_private_file
 from .models import (
     FACILITY_TYPES,
@@ -23,6 +24,7 @@ from .models import (
     BankAccount,
     FacilityAssignment,
     FacilityStatus,
+    InterestPayment,
     Notification,
     Repayment,
     Transaction,
@@ -34,6 +36,8 @@ from .serializers import (
     ApproveSerializer,
     AssignmentSerializer,
     DisburseSerializer,
+    InterestPaymentListSerializer,
+    InterestRateSerializer,
     BankAccountSerializer,
     CreateTransactionSerializer,
     NotificationSerializer,
@@ -46,8 +50,9 @@ from .serializers import (
 )
 
 ADMIN_QUERYSET = Transaction.objects.select_related('customer').prefetch_related(
-    'slip_events', 'documents', 'repayments__events')
-CUSTOMER_QUERYSET = Transaction.objects.select_related('customer').prefetch_related('documents', 'repayments')
+    'slip_events', 'documents', 'repayments__events', 'interest_payments')
+CUSTOMER_QUERYSET = Transaction.objects.select_related('customer').prefetch_related(
+    'documents', 'repayments', 'interest_payments')
 
 
 class IsCustomer(IsAuthenticated):
@@ -65,6 +70,7 @@ class TransactionListView(CsrfAPIView):
     def get(self, request):
         # No scheduler is needed for repayment reminders: they're also sent as customers come by
         facilities.send_reminders(customer=request.user)
+        investments.send_due_notices()
         txns = CUSTOMER_QUERYSET.filter(customer=request.user)
         return Response({'transactions': TransactionSerializer(txns, many=True).data})
 
@@ -110,6 +116,10 @@ class TransactionListView(CsrfAPIView):
                     'repayment_frequency': data['repaymentFrequency'],
                     'disbursement_account': data['disbursementAccount'],
                 } if is_facility else {}),
+                **({
+                    'interest_option': data['interestOption'],
+                    'disbursement_account': data['disbursementAccount'],
+                } if data['interestOption'] else {}),
             )
             for spec, upload in data['documents']:
                 ApplicationDocument.objects.create(
@@ -234,6 +244,7 @@ class AdminTransactionListView(CsrfAPIView):
     permission_classes = [IsAdmin]
 
     def get(self, request):
+        investments.send_due_notices()
         return Response({'transactions': AdminTransactionSerializer(ADMIN_QUERYSET.all(), many=True).data})
 
 
@@ -295,6 +306,21 @@ class RejectView(ReviewActionView):
         services.reject_payment(txn, request.user, serializer.validated_data['note'])
 
 
+class InterestRateView(AdminTransactionView):
+    """A Super Admin changes the rate on an approved loan or hire-purchase, re-pricing what's unpaid."""
+    permission_classes = [IsSuperAdmin]
+
+    def post(self, request, reference):
+        serializer = InterestRateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        try:
+            facilities.change_interest_rate(self.get_txn(reference), request.user, data['interestRate'], data['note'])
+        except facilities.FacilityError as exc:
+            return facility_error(exc)
+        return self.respond(reference)
+
+
 class DisburseView(AdminTransactionView):
     """Any admin records that an approved loan was paid out (or the item delivered)."""
 
@@ -306,6 +332,40 @@ class DisburseView(AdminTransactionView):
         except facilities.FacilityError as exc:
             return facility_error(exc)
         return self.respond(reference)
+
+
+# ---- Investment interest ----
+
+def investment_error(exc):
+    extra = {'errors': {exc.field: [exc.message]}} if exc.field else {}
+    return error(exc.message, exc.code, **extra)
+
+
+class InterestPaymentListView(CsrfAPIView):
+    """Every investment's interest payments, for admins to send as they come due."""
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        investments.send_due_notices()
+        payments = (InterestPayment.objects.select_related('plan__customer')
+                    .annotate(count=Count('plan__interest_payments')).order_by('due_date', 'pk'))
+        return Response({'payments': InterestPaymentListSerializer(payments, many=True).data})
+
+
+class InterestPaymentPayView(CsrfAPIView):
+    """Any admin records that a due interest payment was transferred to the customer."""
+    permission_classes = [IsAdmin]
+
+    def post(self, request, pk):
+        payment = get_object_or_404(InterestPayment, pk=pk)
+        serializer = DisburseSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            investments.record_payment(payment, request.user, serializer.validated_data['reference'])
+        except investments.InvestmentError as exc:
+            return investment_error(exc)
+        txn = get_object_or_404(ADMIN_QUERYSET, pk=payment.plan_id)
+        return Response({'transaction': AdminTransactionSerializer(txn).data})
 
 
 # ---- Repayments ----

@@ -11,7 +11,10 @@ A product's `withdrawal_rules` (JSON) can hold:
   notice_working_days   int    Earliest payout is this many working days (Mon-Fri) after the request
   notice_hours          int    Or this many hours after the request
   payout                str    'any' (default), 'month_end' or 'quarter_end': when payouts happen
-Interest isn't tracked by the app, so terms like "interest is forfeited" have no amount to apply.
+Interest is tracked for investments and savings plans (payments/investments.py). Before maturity,
+ending the plan forfeits all interest paid, and a partial withdrawal drops the plan to the partial
+rate on the capital left; either way interest already paid above what's now earned comes off the
+payout. Elsewhere "interest is forfeited" has no amount.
 """
 
 from calendar import monthrange
@@ -22,6 +25,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from django.db.models import Sum
 from django.utils import timezone
 
+from . import investments
 from .serializers import add_months
 
 # The rules for the official catalogue are set by catalog/migrations/0004_default_withdrawal_rules.py
@@ -59,6 +63,8 @@ class Quote:
     kind: str = 'partial'            # 'partial' or 'full'
     penalty_percent: Decimal = Decimal('0')
     penalty: Decimal = Decimal('0')
+    interest_deducted: Decimal = Decimal('0')
+    interest_rate_after: Decimal | None = None  # A partial withdrawal before maturity lowers the rate
     payout_amount: Decimal = Decimal('0')
     earliest_payout_date: date | None = None
     reason: str = ''                 # Why the plan can't be withdrawn from right now
@@ -69,7 +75,9 @@ class Quote:
         return {
             'available': float(self.available), 'allowed': self.allowed, 'partialAllowed': self.partial_allowed,
             'matured': self.matured, 'kind': self.kind, 'penaltyPercent': float(self.penalty_percent),
-            'penalty': float(self.penalty), 'payoutAmount': float(self.payout_amount),
+            'penalty': float(self.penalty), 'interestDeducted': float(self.interest_deducted),
+            'interestRateAfter': float(self.interest_rate_after) if self.interest_rate_after is not None else None,
+            'payoutAmount': float(self.payout_amount),
             'earliestPayoutDate': self.earliest_payout_date.isoformat() if self.earliest_payout_date else None,
             'reason': self.reason, 'error': self.error, 'notes': self.notes,
         }
@@ -166,5 +174,25 @@ def quote(txn, amount=None, today=None, now=None, exclude=None):
         q.penalty = (amount * q.penalty_percent / 100).quantize(CENT, ROUND_HALF_UP)
         q.notes.append(f'Ending the plan within {penalty_days} days of its start attracts a {q.penalty_percent:g}% '
                        'penalty, deducted from the amount.')
-    q.payout_amount = amount - q.penalty
+    if investments.earns_interest(txn) and investments.is_early(txn, today):
+        word = investments.plan_word(txn)
+        if q.kind == 'full':
+            paid = investments.interest_paid(txn)
+            if paid:
+                q.interest_deducted = min(paid, amount - q.penalty)
+                q.notes.append(f'Ending the {word} before it matures forfeits its interest: the ₦{paid:,.2f} '
+                               'already paid to you is deducted from the amount.')
+            q.notes.append(f'No further interest is paid once the {word} ends.')
+        else:
+            left = q.available - amount
+            total, paid, excess = investments.reprice(txn, left)
+            rate = investments.partial_rate(txn)
+            q.interest_rate_after = rate
+            q.notes.append(f'Withdrawing before maturity means the {word} earns {rate:g}% a year on the '
+                           f'₦{left:,.2f} left: ₦{total:,.2f} interest in all.')
+            if excess:
+                q.interest_deducted = min(excess, amount - q.penalty)
+                q.notes.append(f'₦{paid:,.2f} interest has already been paid to you, so the ₦{excess:,.2f} above '
+                               'that is deducted from this withdrawal.')
+    q.payout_amount = amount - q.penalty - q.interest_deducted
     return q

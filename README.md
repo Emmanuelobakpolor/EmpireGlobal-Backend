@@ -303,9 +303,11 @@ Credit facilities the customer repays by instalments (`payments/facilities.py`).
    (`disbursementAccount: {bankName, accountNumber (10 digits), accountName}`), where a loan is paid out.
    Nothing is paid up front: the transaction starts `pending` with `facility.status = under_review` and
    no `paymentAccount`.
-2. **Review.** Admins recommend; a Super Admin approves (`interestRate`, % per month flat, or the
-   product's `interestRate` when not given; required if neither) or rejects. Approval fixes
-   `totalRepayable = amount × (1 + rate% × months)`. Status → `awaiting_disbursement`.
+2. **Review.** Admins recommend; a Super Admin approves (`interestRate`, % of the amount flat, or the
+   product's `interestRate` when not given, or 13% when the product has none) or rejects. Approval sets
+   `totalRepayable = amount × (1 + rate%)`, whatever the term. Status → `awaiting_disbursement`.
+   A Super Admin can change the rate later (`POST .../interest-rate/`) until the facility is fully
+   repaid: paid instalments stand and the rest of the new total is spread over the unpaid ones.
 3. **Disburse.** Any admin records the transfer reference (loan) or delivery note (hire-purchase). The
    schedule is created from that day, split evenly (the last instalment absorbs rounding). For loans the
    customer's `outstandingLoan` goes up by the total repayable.
@@ -324,6 +326,7 @@ rarely restarts, run it daily from a Render Cron Job instead.
 | Method | Endpoint | Who | Notes |
 | --- | --- | --- | --- |
 | POST | `/api/admin/transactions/<reference>/approve/` | Super Admin | Also takes `interestRate` for applications |
+| POST | `/api/admin/transactions/<reference>/interest-rate/` | Super Admin | `{interestRate, note}`; approved or repaying loans and hire-purchase. Refused while a repayment receipt awaits review |
 | POST | `/api/admin/transactions/<reference>/disburse/` | Any admin | `reference` |
 | POST | `/api/repayments/<id>/upload-receipt/` | Customer | Multipart `file`; returns `{transaction}` |
 | GET | `/api/repayments/<id>/receipt/` | Owner or admin | Streams the receipt |
@@ -334,6 +337,44 @@ Loan and hire-purchase transactions carry a `facility` object: `status, repaymen
 interestRate, totalRepayable, amountPaid, outstanding, disbursementAccount, disbursedAt,
 disbursementReference, nextRepayment, overdueCount, noticeDays, repayments` (each with `state`:
 `upcoming`, `due`, `overdue`, `pending` or `paid`, and `paymentAccount` only once it's due).
+
+## Interest on investments and savings
+
+Interest is a percent a year of the capital, earned pro-rata over the plan (`payments/investments.py`).
+Investments are always 12-month contracts, and the customer picks `interestOption` when investing.
+Savings plans with a set length are always paid at maturity. Both need the customer's own account
+(`disbursementAccount`), where interest is sent.
+
+| Plan | Option | Default rate | Paid |
+| --- | --- | --- | --- |
+| Investment | `upfront` | 30% | All at once, when the contract starts |
+| Investment | `monthly` | 36% a year | In 12 equal monthly parts (3% a month) |
+| Investment | `maturity` | 42% | All at once after 12 months, alongside the capital |
+| Savings | `maturity` | 15% a year | At the end of the plan (7.5% over 6 months, 30% over 24) |
+
+A product can override these (`interestRates: {upfront, monthly, maturity, partial}`). A Super Admin's
+final approval of the payment (`interestRate`, % a year, optional) fixes the rate, starts the plan that
+day and schedules the payments. Admins are told as each one comes within 3 days of its due date (on
+the same triggers as repayment reminders), transfer it, and record the transfer reference.
+
+Before maturity:
+- **Partial withdrawal** (from month 8, for both): the plan drops to the `partial` rate (default 12%
+  a year) on the capital left. Interest already paid above that new total comes off the payout
+  (`interestDeducted`; the quote also gives `interestRateAfter`), and when the withdrawal is approved
+  the payments still to come are recalculated, or cancelled if nothing more is owed.
+- **Full withdrawal** (early termination): all interest is forfeited. What was paid comes off the
+  payout and the remaining payments are cancelled.
+
+Interest can't be recorded while a withdrawal on the plan is being reviewed.
+
+| Method | Endpoint | Who | Notes |
+| --- | --- | --- | --- |
+| GET | `/api/admin/interest-payments/` | Any admin | Every plan's payments, by due date |
+| POST | `/api/admin/interest-payments/<id>/pay/` | Any admin | `reference`; once due. Returns `{transaction}` |
+
+Investment and savings transactions carry an `investment` object: `option, rate, partialRate,
+termMonths, totalInterest, interestPaid, payoutAccount, nextPayment, dueCount, payments` (each with `state`: `upcoming`, `due`, `paid` or
+`cancelled`).
 
 ## Names
 

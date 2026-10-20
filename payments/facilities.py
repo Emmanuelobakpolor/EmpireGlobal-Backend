@@ -2,14 +2,16 @@
 
 1. The customer applies with documents, a guarantor (and the item, for hire-purchase), how they
    want to repay, and their own bank account. Nothing is paid at this point.
-2. Admins recommend; a Super Admin approves (fixing the interest rate) or rejects.
+2. Admins recommend; a Super Admin approves (setting the interest rate) or rejects.
 3. An admin pays the loan into the customer's account, or delivers the item, and records the
    transfer reference or delivery note. The repayment schedule starts that day.
 4. As each instalment comes due, the customer is shown the collection account to pay into,
    pays, and uploads the receipt. Admins recommend; a Super Admin confirms it. Once every
    instalment is confirmed the facility is complete (and a hire-purchase item is theirs).
 
-Interest is flat: a percent of the amount for each month of the term.
+Interest is flat: a percent of the amount, charged once whatever the term. It starts at the
+product's rate (DEFAULT_INTEREST_RATE when the product has none), and a Super Admin can change it
+on approval or at any time until the facility is fully repaid.
 """
 
 import math
@@ -40,6 +42,8 @@ from .notify import customer_link, notify, notify_admins
 
 # Collection account details appear this many days before an instalment is due
 REPAYMENT_NOTICE_DAYS = 7
+# Percent of the amount, for products without a rate of their own
+DEFAULT_INTEREST_RATE = Decimal('13')
 ROLE_LABELS = {Role.SUPER_ADMIN: 'Super Admin', Role.ADMIN: 'Admin'}
 CENT = Decimal('0.01')
 
@@ -85,9 +89,22 @@ def repayment_frequencies(frequency_text):
     return found or [RepaymentFrequency.MONTHLY.value]
 
 
-def total_repayable(amount, rate, term_months):
-    interest = Decimal(amount) * Decimal(rate) / 100 * (term_months or 1)
+def product_rate(product):
+    """The rate an application is priced at unless a Super Admin sets another."""
+    if product is not None and product.interest_rate is not None:
+        return product.interest_rate
+    return DEFAULT_INTEREST_RATE
+
+
+def total_repayable(amount, rate):
+    interest = Decimal(amount) * Decimal(rate) / 100
     return (Decimal(amount) + interest).quantize(CENT, ROUND_HALF_UP)
+
+
+def split(total, count):
+    """`total` in `count` even amounts; the last takes any rounding."""
+    each = (Decimal(total) / count).quantize(CENT, ROUND_HALF_UP)
+    return [each] * (count - 1) + [Decimal(total) - each * (count - 1)]
 
 
 def add_months(start, months):
@@ -109,9 +126,7 @@ def schedule(total, term_months, frequency, start):
         step = 1 if frequency == RepaymentFrequency.DAILY else 7
         count = max(1, math.ceil((end - start).days / step))
         dates = [start + timedelta(days=step * i) for i in range(1, count + 1)]
-    each = (Decimal(total) / len(dates)).quantize(CENT, ROUND_HALF_UP)
-    amounts = [each] * (len(dates) - 1) + [Decimal(total) - each * (len(dates) - 1)]
-    return list(zip(dates, amounts))
+    return list(zip(dates, split(total, len(dates))))
 
 
 def collection_account(txn):
@@ -157,17 +172,13 @@ def _audit(actor, txn, action, status, details, reference=None):
 
 
 def approve_application(txn, super_admin, note='', interest_rate=None):
-    """Final approval of a locked, undecided application. The interest rate is fixed now."""
+    """Final approval of a locked, undecided application, at `interest_rate` or the product's rate."""
     from catalog.models import Product
 
     if interest_rate is None:
-        product = Product.objects.filter(code=txn.product_id).first()
-        interest_rate = product.interest_rate if product else None
-    if interest_rate is None:
-        raise FacilityError('Set the interest rate for this application before approving it.',
-                            'interest_rate_required', 'interestRate')
+        interest_rate = product_rate(Product.objects.filter(code=txn.product_id).first())
     txn.interest_rate = Decimal(interest_rate)
-    txn.total_repayable = total_repayable(txn.amount, txn.interest_rate, txn.term_months)
+    txn.total_repayable = total_repayable(txn.amount, txn.interest_rate)
     txn.status = Transaction.Status.APPROVED
     txn.facility_status = FacilityStatus.AWAITING_DISBURSEMENT
     txn.decided_at = timezone.now()
@@ -177,7 +188,7 @@ def approve_application(txn, super_admin, note='', interest_rate=None):
     kind = facility_word(txn)
     _audit(super_admin, txn, 'Application Approved', 'success',
            f'Approved {txn.customer.full_name}\'s {txn.product_name} application of {naira(txn.amount)} at '
-           f'{txn.interest_rate}% a month; {naira(txn.total_repayable)} to repay.')
+           f'{emails.percent(txn.interest_rate)} interest; {naira(txn.total_repayable)} to repay.')
     if kind == 'loan':
         account = txn.disbursement_account or {}
         next_step = (f'We\'ll pay {naira(txn.amount)} into your {account.get("bankName", "")} account '
@@ -209,6 +220,56 @@ def reject_application(txn, super_admin, reason):
            f'Your {txn.product_name} application ({txn.reference}) was not approved. Reason: {reason}',
            Notification.Kind.APPLICATION, Notification.Type.ERROR, link=customer_link(txn))
     emails.send_application_rejected(txn, reason)
+    return txn
+
+
+def change_interest_rate(txn, super_admin, rate, note=''):
+    """Re-price an approved facility that isn't fully repaid. Confirmed instalments stand; what's
+    left of the new total is spread evenly over the instalments still to pay."""
+    rate = Decimal(rate)
+    with db_transaction.atomic():
+        txn = Transaction.objects.select_for_update().select_related('customer').get(pk=txn.pk)
+        if txn.facility_status not in (FacilityStatus.AWAITING_DISBURSEMENT, FacilityStatus.ACTIVE):
+            raise FacilityError('The rate can only be changed once the application is approved and until it is '
+                                'fully repaid.', 'rate_locked')
+        if rate == txn.interest_rate:
+            raise FacilityError(f'The rate is already {emails.percent(rate)}.', 'rate_unchanged', 'interestRate')
+
+        old_rate, old_total = txn.interest_rate, txn.total_repayable
+        new_total = total_repayable(txn.amount, rate)
+        unpaid = []
+        if txn.facility_status == FacilityStatus.ACTIVE:
+            reps = list(txn.repayments.select_for_update())
+            # The customer paid what a pending receipt shows; let it be decided before amounts move
+            if any(r.status == Repayment.Status.PENDING for r in reps):
+                raise FacilityError('Confirm or reject the repayment receipt waiting for review before changing '
+                                    'the rate.', 'receipt_pending')
+            paid = sum((r.amount for r in reps if r.status == Repayment.Status.PAID), Decimal(0))
+            unpaid = [r for r in reps if r.status == Repayment.Status.SCHEDULED]
+            if new_total - paid < CENT * len(unpaid):
+                raise FacilityError(f'{naira(paid)} has already been repaid, so a total of {naira(new_total)} '
+                                    'leaves nothing for the remaining instalments.', 'rate_too_low', 'interestRate')
+            for rep, amount in zip(unpaid, split(new_total - paid, len(unpaid))):
+                rep.amount = amount
+            Repayment.objects.bulk_update(unpaid, ['amount'])
+            if txn.product_type == ProductType.LOAN:
+                User.objects.filter(pk=txn.customer_id).update(
+                    outstanding_loan=F('outstanding_loan') + (new_total - old_total))
+
+        txn.interest_rate = rate
+        txn.total_repayable = new_total
+        txn.save(update_fields=['interest_rate', 'total_repayable'])
+
+        _audit(super_admin, txn, 'Interest Rate Changed', 'warning',
+               f'Changed the interest on {txn.customer.full_name}\'s {txn.product_name} from '
+               f'{emails.percent(old_rate)} to {emails.percent(rate)}; total to repay {naira(old_total)} → '
+               f'{naira(new_total)}.' + (f' Note: {note}' if note else ''))
+        each = f' Your remaining instalments are now about {naira(unpaid[0].amount)} each.' if unpaid else ''
+        notify(txn.customer, 'Interest rate updated',
+               f'The interest on {txn.product_name} ({txn.reference}) is now {emails.percent(rate)}. '
+               f'Total to repay: {naira(new_total)}.{each}',
+               Notification.Kind.APPLICATION, link=customer_link(txn))
+        emails.send_interest_rate_changed(txn, old_rate, unpaid)
     return txn
 
 

@@ -12,12 +12,12 @@
       12
     ],
     "frequency": "One-time lump sum",
-    "expectedReturn": "18% interest",
+    "expectedReturn": "30% upfront, 36% monthly or 42% at maturity",
     "benefits": [
       "Access to loan facilities",
       "Stand as guarantor for other people’s loans of 1% to 80% of your invested amount",
       "No collateral on loans that fall within your invested amount",
-      "18% interest on the invested amount"
+      "Interest your way: 30% upfront, 36% a year paid monthly (3% a month), or 42% at maturity with your capital"
     ],
     "clauses": [
       "The plan cannot be terminated before the maturity of the contract.",
@@ -25,12 +25,13 @@
       "Terminating the contract within the first 30 days attracts a 5% penalty, deducted from the amount invested.",
       "You can only stand as guarantor for another person if your active investment’s maturity date matches the last repayment date of the guaranteed person’s loan.",
       "If a person you guarantee cannot repay their loan as agreed, the loan deduction and interest shall be deducted from your investment account.",
-      "You must give 5 working days’ notice for a contract termination request to be processed for payment."
+      "You must give 5 working days’ notice for a contract termination request to be processed for payment.",
+      "Partial withdrawal can only be made after the 8th month of the contract; interest is then 12% a year, calculated on your current invested capital only, and interest already paid above that is deducted from the withdrawal."
     ],
     "status": "active",
     "withdrawalRules": {
       "allowed": true,
-      "partial_after_months": null,
+      "partial_after_months": 8,
       "early_penalty_percent": 5,
       "early_penalty_days": 30,
       "notice_working_days": 5,
@@ -45,20 +46,17 @@
     "description": "Pay a lump sum once for a contract of more than 12 months, with interest paid yearly.",
     "minAmount": 100000,
     "maxAmount": 50000000,
-    "duration": "More than 12 months",
+    "duration": "12 months",
     "termOptions": [
-      24,
-      36,
-      48,
-      60
+      12
     ],
     "frequency": "One-time lump sum",
-    "expectedReturn": "18% yearly",
+    "expectedReturn": "30% upfront, 36% monthly or 42% at maturity",
     "benefits": [
       "Access to loan facilities",
       "Stand as guarantor for other people’s loans of 1% to 80% of your invested amount",
       "No collateral on loans that fall within your invested amount",
-      "18% interest on the invested amount, paid yearly"
+      "Interest your way: 30% upfront, 36% a year paid monthly (3% a month), or 42% at maturity with your capital"
     ],
     "clauses": [
       "The plan cannot be terminated before the maturity of the contract.",
@@ -66,12 +64,13 @@
       "Terminating the contract within the first 30 days attracts a 5% penalty, deducted from the amount invested.",
       "You can only stand as guarantor for another person if your active investment’s maturity date matches the last repayment date of the guaranteed person’s loan.",
       "If a person you guarantee cannot repay their loan as agreed, the loan deduction and interest shall be deducted from your investment account.",
-      "You must give 5 working days’ notice for a contract termination request to be processed for payment."
+      "You must give 5 working days’ notice for a contract termination request to be processed for payment.",
+      "Partial withdrawal can only be made after the 8th month of the contract; interest is then 12% a year, calculated on your current invested capital only, and interest already paid above that is deducted from the withdrawal."
     ],
     "status": "active",
     "withdrawalRules": {
       "allowed": true,
-      "partial_after_months": null,
+      "partial_after_months": 8,
       "early_penalty_percent": 5,
       "early_penalty_days": 30,
       "notice_working_days": 5,
@@ -97,13 +96,13 @@
       24
     ],
     "frequency": "Daily or Monthly",
-    "expectedReturn": "10% at 12 months",
+    "expectedReturn": "15% a year",
     "benefits": [
       "Access to loan facilities",
       "No collateral on loans that fall within your current invested amount",
       "Stand as guarantor for other people’s loans of 1% to 50% of your invested amount as of the date of need",
       "Partial withdrawal after the 8th month",
-      "10% commission on a contract that lasts 12 months"
+      "15% interest a year, paid at maturity"
     ],
     "clauses": [
       "The plan cannot be terminated before the maturity of the contract.",
@@ -112,7 +111,7 @@
       "You must give 5 working days’ notice for a contract termination request to be processed for payment.",
       "You can only stand as guarantor for another person if your active investment’s maturity date matches the last repayment date of the guaranteed person’s loan.",
       "If a person you guarantee cannot repay their loan as agreed, the loan deduction and interest shall be deducted from your investment account.",
-      "Partial withdrawal can only be made after the 8th month of the 12-month contract, and interest is then calculated on your current invested capital only.",
+      "Partial withdrawal can only be made after the 8th month of the contract; interest is then 12% a year, calculated on your current invested capital only, and interest already paid above that is deducted from the withdrawal.",
       "Savings must be made as agreed in the contract; missed savings attract a penalty on the interest."
     ],
     "status": "active",
@@ -144,13 +143,13 @@
       24
     ],
     "frequency": "Daily or Weekly",
-    "expectedReturn": "10% at 12 months",
+    "expectedReturn": "15% a year",
     "benefits": [
       "Access to loan facilities",
       "No collateral on loans that fall within your current invested amount",
       "Stand as guarantor for other people’s loans of 1% to 50% of your invested amount as of the date of need",
       "Partial withdrawal after the 8th month",
-      "10% commission on a contract that lasts 12 months"
+      "15% interest a year, paid at maturity"
     ],
     "clauses": [
       "The plan cannot be terminated before the maturity of the contract.",
@@ -159,7 +158,7 @@
       "You must give 5 working days’ notice for a contract termination request to be processed for payment.",
       "You can only stand as guarantor for another person if your active investment’s maturity date matches the last repayment date of the guaranteed person’s loan.",
       "If a person you guarantee cannot repay their loan as agreed, the loan deduction and interest shall be deducted from your investment account.",
-      "Partial withdrawal can only be made after the 8th month of the 12-month contract, and interest is then calculated on your current invested capital only.",
+      "Partial withdrawal can only be made after the 8th month of the contract; interest is then 12% a year, calculated on your current invested capital only, and interest already paid above that is deducted from the withdrawal.",
       "Savings must be made as agreed in the contract; missed savings attract a penalty on the interest."
     ],
     "status": "active",
@@ -191,13 +190,13 @@
       24
     ],
     "frequency": "Daily",
-    "expectedReturn": "10% at 12 months",
+    "expectedReturn": "15% a year",
     "benefits": [
       "Access to loan facilities",
       "No collateral on loans that fall within your current invested amount",
       "Stand as guarantor for other people’s loans of 1% to 50% of your invested amount as of the date of need",
       "Partial withdrawal after the 8th month",
-      "10% commission on a contract that lasts 12 months"
+      "15% interest a year, paid at maturity"
     ],
     "clauses": [
       "The plan cannot be terminated before the maturity of the contract.",
@@ -206,7 +205,7 @@
       "You must give 5 working days’ notice for a contract termination request to be processed for payment.",
       "You can only stand as guarantor for another person if your active investment’s maturity date matches the last repayment date of the guaranteed person’s loan.",
       "If a person you guarantee cannot repay their loan as agreed, the loan deduction and interest shall be deducted from your investment account.",
-      "Partial withdrawal can only be made after the 8th month of the 12-month contract, and interest is then calculated on your current invested capital only.",
+      "Partial withdrawal can only be made after the 8th month of the contract; interest is then 12% a year, calculated on your current invested capital only, and interest already paid above that is deducted from the withdrawal.",
       "Savings must be made as agreed in the contract; missed savings attract a penalty on the interest."
     ],
     "status": "active",

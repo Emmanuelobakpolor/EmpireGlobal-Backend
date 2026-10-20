@@ -42,6 +42,13 @@ class RepaymentFrequency(models.TextChoices):
     ONCE = 'once', 'One-time'
 
 
+class InterestOption(models.TextChoices):
+    """How an investment's interest is paid; the customer chooses when they invest."""
+    UPFRONT = 'upfront', 'Upfront'
+    MONTHLY = 'monthly', 'Monthly'
+    MATURITY = 'maturity', 'At maturity'
+
+
 class FacilityStatus(models.TextChoices):
     UNDER_REVIEW = 'under_review', 'Under review'
     # Approved; the loan is waiting to be paid out, or the item to be delivered
@@ -103,14 +110,21 @@ class Transaction(models.Model):
     # ---- Loans and hire-purchase only ----
     facility_status = models.CharField(max_length=24, choices=FacilityStatus.choices, blank=True)
     repayment_frequency = models.CharField(max_length=16, choices=RepaymentFrequency.choices, blank=True)
-    # Flat interest, percent of the amount per month of the term; fixed when the application is approved
+    # Flat interest, percent of the amount whatever the term; set on approval, and a Super Admin can
+    # change it until the facility is fully repaid
     interest_rate = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     total_repayable = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
-    # The customer's own account, entered on the application: where a loan is paid out to
+    # The customer's own account: where a loan is paid out to, or an investment's interest
     disbursement_account = models.JSONField(null=True, blank=True)
     disbursed_at = models.DateTimeField(null=True, blank=True)
     # Bank transfer reference for a loan, delivery note for a hire-purchase item
     disbursement_reference = models.CharField(max_length=100, blank=True)
+
+    # ---- Investments and savings plans (interest_rate above is the yearly rate, set on approval) ----
+    # Savings plans are always paid at maturity
+    interest_option = models.CharField(max_length=16, choices=InterestOption.choices, blank=True)
+    # The yearly rate after a partial withdrawal before maturity
+    partial_interest_rate = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
 
     class Meta:
         ordering = ['-created_at']
@@ -178,6 +192,40 @@ class Repayment(models.Model):
     def reference(self):
         # Used as the transfer narration so admins can match the payment
         return f'{self.facility.reference}-R{self.number:02d}'
+
+
+class InterestPayment(models.Model):
+    """One interest payment on an investment or savings plan: due on a date, sent by an admin by bank transfer."""
+
+    class Status(models.TextChoices):
+        SCHEDULED = 'scheduled', 'Scheduled'
+        PAID = 'paid', 'Paid'
+        # The investment was ended early, so no more interest is paid
+        CANCELLED = 'cancelled', 'Cancelled'
+
+    plan = models.ForeignKey(Transaction, on_delete=models.CASCADE, related_name='interest_payments')
+    number = models.PositiveSmallIntegerField()
+    due_date = models.DateField()
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.SCHEDULED)
+    # The customer's account it was sent to, as it was at the time
+    paid_to = models.JSONField(null=True, blank=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+    paid_by_name = models.CharField(max_length=150, blank=True)
+    payout_reference = models.CharField(max_length=100, blank=True)
+    # When admins were told it's due (once)
+    due_notified_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['plan', 'number']
+        constraints = [models.UniqueConstraint(fields=['plan', 'number'], name='one_interest_payment_per_number')]
+
+    def __str__(self):
+        return self.reference
+
+    @property
+    def reference(self):
+        return f'{self.plan.reference}-I{self.number:02d}'
 
 
 class RepaymentEvent(models.Model):
@@ -360,6 +408,9 @@ class Withdrawal(models.Model):
     # `amount` comes off the plan and balance; `payout_amount` is what's sent after any penalty
     amount = models.DecimalField(max_digits=14, decimal_places=2)
     penalty = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    # Interest already paid that the plan no longer earns (ending it early, or a partial withdrawal
+    # before maturity), taken off the payout
+    interest_deducted = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     payout_amount = models.DecimalField(max_digits=14, decimal_places=2)
     earliest_payout_date = models.DateField()
     bank_name = models.CharField(max_length=100)

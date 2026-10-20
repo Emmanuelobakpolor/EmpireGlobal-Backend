@@ -98,25 +98,29 @@ class ApplicationTests(FacilityTestBase):
         self.assertEqual(self.post(self.client_for(self.admin), self.admin_url(txn, 'approve')).status_code, 403)
         res = self.post(self.client_for(self.admin), self.admin_url(txn, 'disburse'), {'reference': 'X'})
         self.assertEqual(res.json()['code'], 'not_awaiting_disbursement')
-        # The House Rent Loan has no set rate, so the Super Admin must give one
-        res = self.post(self.client_for(self.boss), self.admin_url(txn, 'approve'))
-        self.assertEqual(res.json()['code'], 'interest_rate_required')
-
         data = self.approve(txn, rate=5)
-        # ₦120,000 + 5% a month for 3 months
-        self.assertEqual(data['facility']['totalRepayable'], 138000.0)
+        # ₦120,000 + 5% flat, whatever the term
+        self.assertEqual(data['facility']['totalRepayable'], 126000.0)
         self.assertEqual((data['status'], data['facility']['status']), ('approved', 'awaiting_disbursement'))
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.outstanding_loan, 0)
         self.assertIn('Application approved', self.titles())
         self.assertIn('Application you reviewed was approved', [n.title for n in self.admin.notifications.all()])
 
+    def test_default_rate_is_used_when_the_product_has_none(self):
+        # The House Rent Loan has no rate of its own
+        txn = self.apply()
+        data = self.post(self.client_for(self.boss), self.admin_url(txn, 'approve')).json()['transaction']
+        self.assertEqual((data['facility']['interestRate'], data['facility']['totalRepayable']), (13.0, 135600.0))
+        product = self.client.get('/api/products/').json()['products']
+        self.assertEqual(next(p for p in product if p['id'] == 'p13')['effectiveInterestRate'], 13.0)
+
     def test_product_rate_is_used_when_none_given(self):
         from catalog.models import Product
         Product.objects.filter(code='p13').update(interest_rate=Decimal('2.5'))
         txn = self.apply()
         data = self.post(self.client_for(self.boss), self.admin_url(txn, 'approve')).json()['transaction']
-        self.assertEqual((data['facility']['interestRate'], data['facility']['totalRepayable']), (2.5, 129000.0))
+        self.assertEqual((data['facility']['interestRate'], data['facility']['totalRepayable']), (2.5, 123000.0))
 
     def test_rejection(self):
         txn = self.apply()
@@ -137,11 +141,11 @@ class RepaymentTests(FacilityTestBase):
         data = self.disburse(txn, 'TRF-778')
         facility = data['facility']
         self.assertEqual((facility['status'], facility['disbursementReference']), ('active', 'TRF-778'))
-        self.assertEqual([r['amount'] for r in facility['repayments']], [46000.0, 46000.0, 46000.0])
+        self.assertEqual([r['amount'] for r in facility['repayments']], [42000.0, 42000.0, 42000.0])
         self.assertEqual(facility['repayments'][0]['reference'], f'{txn.reference}-R01')
         self.assertEqual(data['endDate'], facility['repayments'][-1]['dueDate'])
         self.customer.refresh_from_db()
-        self.assertEqual(self.customer.outstanding_loan, Decimal('138000'))
+        self.assertEqual(self.customer.outstanding_loan, Decimal('126000'))
         # Disbursing twice isn't possible
         res = self.post(self.client_for(self.admin), self.admin_url(txn, 'disburse'), {'reference': 'again'})
         self.assertEqual(res.json()['code'], 'not_awaiting_disbursement')
@@ -179,9 +183,9 @@ class RepaymentTests(FacilityTestBase):
         facility = res.json()['transaction']['facility']
         self.assertEqual(facility['repayments'][0]['state'], 'paid')
         self.assertEqual([e['action'] for e in facility['repayments'][0]['trail']], ['recommended_approval', 'approved'])
-        self.assertEqual((facility['amountPaid'], facility['outstanding']), (46000.0, 92000.0))
+        self.assertEqual((facility['amountPaid'], facility['outstanding']), (42000.0, 84000.0))
         self.customer.refresh_from_db()
-        self.assertEqual(self.customer.outstanding_loan, Decimal('92000'))
+        self.assertEqual(self.customer.outstanding_loan, Decimal('84000'))
         self.assertEqual(self.upload_repayment(first).json()['code'], 'already_paid')
 
         # A rejected receipt leaves the instalment unpaid, to be paid again
@@ -220,6 +224,51 @@ class RepaymentTests(FacilityTestBase):
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.outstanding_loan, 0)
         self.assertEqual(self.customer_view(txn)['timeline'][3]['label'], 'Item Delivered')
+
+
+class InterestRateChangeTests(FacilityTestBase):
+    def change(self, txn, rate, client=None):
+        return self.post(client or self.client_for(self.boss), self.admin_url(txn, 'interest-rate'), {'interestRate': rate})
+
+    def test_only_a_super_admin_can_change_it_once_approved(self):
+        txn = self.apply()
+        self.assertEqual(self.change(txn, 10).json()['code'], 'rate_locked')
+        self.approve(txn)
+        self.assertEqual(self.change(txn, 10, self.client_for(self.admin)).status_code, 403)
+        self.assertEqual(self.change(txn, 5).json()['code'], 'rate_unchanged')
+
+    def test_before_disbursement_it_reprices_the_total(self):
+        txn = self.apply()
+        self.approve(txn)
+        res = self.change(txn, 10)
+        self.assertEqual(res.status_code, 200, res.content)
+        facility = res.json()['transaction']['facility']
+        self.assertEqual((facility['interestRate'], facility['totalRepayable']), (10.0, 132000.0))
+        self.assertEqual([r['amount'] for r in self.disburse(txn)['facility']['repayments']], [44000.0] * 3)
+        self.assertTrue(Notification.objects.filter(recipient=self.customer, title='Interest rate updated').exists())
+
+    def test_while_repaying_it_spreads_the_rest_over_unpaid_instalments(self):
+        txn = self.active_loan()
+        first = txn.repayments.get(number=1)
+        self.bring_due(first, days=0)
+        self.upload_repayment(first)
+        # A receipt under review holds the amounts in place
+        self.assertEqual(self.change(txn, 13).json()['code'], 'receipt_pending')
+        self.post(self.client_for(self.boss), f'/api/admin/repayments/{first.pk}/approve/')
+
+        mail.outbox.clear()
+        with self.captureOnCommitCallbacks(execute=True):
+            facility = self.change(txn, 13).json()['transaction']['facility']
+        # ₦135,600 in all; ₦42,000 already paid leaves ₦93,600 over two instalments
+        self.assertEqual([r['amount'] for r in facility['repayments']], [42000.0, 46800.0, 46800.0])
+        self.assertEqual((facility['totalRepayable'], facility['outstanding']), (135600.0, 93600.0))
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.outstanding_loan, Decimal('93600'))
+        self.assertIn('46,800.00', mail.outbox[0].body)
+
+        # The total can't drop below what's already been repaid
+        txn.repayments.filter(number=2).update(status=Repayment.Status.PAID, amount=Decimal('80000'))
+        self.assertEqual(self.change(txn, 0).json()['code'], 'rate_too_low')
 
 
 class ReminderTests(FacilityTestBase):

@@ -12,7 +12,7 @@ from accounts.models import Role, User
 from core import audit
 
 from .models import BALANCE_FIELD_BY_TYPE, Notification, SlipEvent, Transaction
-from . import emails, facilities
+from . import emails, facilities, investments
 from .notify import customer_link, notify, notify_admins, payment_review_link
 
 ROLE_LABELS = {Role.SUPER_ADMIN: 'Super Admin', Role.ADMIN: 'Admin'}
@@ -105,7 +105,8 @@ def _tell_recommenders(txn, decider, approved):
 
 def approve_payment(txn, super_admin, note='', interest_rate=None):
     """Final approval: credit the customer's balance, all or nothing. For a loan or hire-purchase
-    application, approve it at `interest_rate` (or the product's rate) instead."""
+    application, approve it at `interest_rate` (or the product's rate) instead. For an investment,
+    `interest_rate` (or the product's rate for the chosen option) starts its interest schedule."""
     with db_transaction.atomic():
         txn = _locked(txn)
         _require_reviewable(txn)
@@ -125,6 +126,8 @@ def approve_payment(txn, super_admin, note='', interest_rate=None):
             # F() update so two approvals at once can't overwrite each other
             User.objects.filter(pk=txn.customer_id).update(**{field: F(field) + txn.amount})
 
+        interest_plan = investments.start(txn, super_admin, interest_rate) if investments.earns_interest(txn) else None
+
         _event(txn, super_admin, SlipEvent.Action.APPROVED, note)
         _audit(super_admin, txn, 'Payment Approved', 'success',
                f'Final approval of {txn.product_name} payment of {naira(txn.amount)} for {txn.customer.full_name}. '
@@ -134,7 +137,10 @@ def approve_payment(txn, super_admin, note='', interest_rate=None):
                Notification.Kind.PAYMENT, Notification.Type.SUCCESS, link=customer_link(txn))
         _tell_recommenders(txn, super_admin, approved=True)
         new_balance = User.objects.values_list(field, flat=True).get(pk=txn.customer_id) if field else None
-        emails.send_deposit_confirmed(txn, field, new_balance)
+        emails.send_deposit_confirmed(txn, field, new_balance, interest_plan)
+        if interest_plan:
+            # An upfront payment is due straight away
+            investments.send_due_notices()
     return txn
 
 

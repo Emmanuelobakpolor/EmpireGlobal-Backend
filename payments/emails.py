@@ -1,6 +1,7 @@
 """Emails to customers about money moving on their account."""
 
 import logging
+from decimal import Decimal
 
 from django.conf import settings
 from django.core.mail import send_mail
@@ -19,6 +20,11 @@ def naira(amount):
     return f'₦{float(amount):,.2f}'
 
 
+def percent(rate):
+    """13.00 → '13%', 12.50 → '12.5%'."""
+    return f'{Decimal(rate).normalize():f}%'
+
+
 def _send_after_commit(subject, message, recipient):
     """Send once the database change is saved, and never let a mail problem undo it."""
     def send():
@@ -34,7 +40,7 @@ def _transaction_link(txn):
     return f'{settings.FRONTEND_URL}/customer/transactions/{txn.reference}'
 
 
-def send_deposit_confirmed(txn, balance_field=None, new_balance=None):
+def send_deposit_confirmed(txn, balance_field=None, new_balance=None, interest_plan=None):
     customer = txn.customer
     lines = [
         f'Hi {customer.full_name},',
@@ -47,6 +53,12 @@ def send_deposit_confirmed(txn, balance_field=None, new_balance=None):
     ]
     if balance_field and new_balance is not None:
         lines += ['', f'Your {BALANCE_LABELS.get(balance_field, "balance").lower()} is now {naira(new_balance)}.']
+    if interest_plan:
+        account = txn.disbursement_account or {}
+        lines += ['', f'Your investment runs from {txn.start_date:%d %b %Y} to {txn.end_date:%d %b %Y} at '
+                      f'{percent(txn.interest_rate)} a year, paid {txn.get_interest_option_display().lower()}. '
+                      f'Interest is sent to {account.get("bankName", "")} {account.get("accountNumber", "")}:']
+        lines += [f'  {due:%d %b %Y}   {naira(amount)}' for due, amount in interest_plan]
     lines += ['', f'View it in your account: {_transaction_link(txn)}', '',
               'If you did not make this payment, contact support immediately.']
     _send_after_commit(f'Deposit confirmed: {naira(txn.amount)} ({txn.reference})', '\n'.join(lines), customer.email)
@@ -74,6 +86,8 @@ def _withdrawal_lines(wd):
     ]
     if wd.penalty:
         lines.append(f'Penalty:     {naira(wd.penalty)}')
+    if wd.interest_deducted:
+        lines.append(f'Interest already paid, forfeited: {naira(wd.interest_deducted)}')
     lines += [
         f'You receive: {naira(wd.payout_amount)}',
         f'Paid to:     {wd.bank_name} · {wd.account_number} ({wd.account_name})',
@@ -141,7 +155,7 @@ def _facility_lines(txn):
         f'Term:           {txn.term_months} month(s), repaid {txn.get_repayment_frequency_display().lower()}',
     ]
     if txn.interest_rate is not None:
-        lines += [f'Interest:       {txn.interest_rate}% a month (flat)',
+        lines += [f'Interest:       {percent(txn.interest_rate)} of the amount (flat)',
                   f'Total to repay: {naira(txn.total_repayable)}']
     lines.append(f'Reference:      {txn.reference}')
     return lines
@@ -193,6 +207,35 @@ def send_facility_started(txn, plan):
     ])
     _send_after_commit(f'{"Loan disbursed" if loan else "Item delivered"} ({txn.reference})', message,
                        txn.customer.email)
+
+
+def send_interest_rate_changed(txn, old_rate, unpaid):
+    lines = [
+        f'Hi {txn.customer.full_name},', '',
+        f'The interest on your {txn.product_name} has changed from {percent(old_rate)} to '
+        f'{percent(txn.interest_rate)}.', '',
+        *_facility_lines(txn),
+    ]
+    if unpaid:
+        lines += ['', 'Your remaining instalments:']
+        lines += [f'  #{r.number:<3} due {r.due_date:%d %b %Y}   {naira(r.amount)}' for r in unpaid]
+    lines += ['', f'View your repayment schedule: {_transaction_link(txn)}']
+    _send_after_commit(f'Interest rate updated ({txn.reference})', '\n'.join(lines), txn.customer.email)
+
+
+def send_interest_paid(payment):
+    txn = payment.plan
+    account = txn.disbursement_account or {}
+    message = '\n'.join([
+        f'Hi {txn.customer.full_name},', '',
+        f'{naira(payment.amount)} interest on your {txn.product_name} has been sent to your bank account.', '',
+        f'Paid to:        {account.get("bankName", "")} · {account.get("accountNumber", "")} ({account.get("accountName", "")})',
+        f'Transfer ref:   {payment.payout_reference}',
+        f'Reference:      {payment.reference}', '',
+        'It may take a short while to show in your bank account.',
+        f'View your investment: {_transaction_link(txn)}',
+    ])
+    _send_after_commit(f'Interest paid: {naira(payment.amount)} ({payment.reference})', message, txn.customer.email)
 
 
 def send_repayment_reminder(txn, repayments, account):

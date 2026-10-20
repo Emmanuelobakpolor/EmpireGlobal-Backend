@@ -7,13 +7,14 @@ from rest_framework import serializers
 
 from accounts.serializers import NextOfKinField, person_name
 
-from . import facilities
+from . import facilities, investments
 from .facilities import add_months  # noqa: F401 - imported from here by views
 from .files import validate_upload
 from .models import (
     ApplicationDocument,
     BankAccount,
     FacilityAssignment,
+    InterestOption,
     Notification,
     ProductType,
     Repayment,
@@ -57,14 +58,21 @@ class TransactionSerializer(serializers.ModelSerializer):
     timeline = serializers.SerializerMethodField()
     # Loans and hire-purchase: terms, the customer's account and the repayment schedule
     facility = serializers.SerializerMethodField()
+    # Investments: how interest is paid, where to, and its schedule
+    investment = serializers.SerializerMethodField()
 
     class Meta:
         model = Transaction
         fields = [
             'id', 'reference', 'customerId', 'customerName', 'productId', 'productName', 'productType', 'amount',
             'date', 'termMonths', 'startDate', 'endDate', 'status', 'application', 'nextOfKin', 'termsAcceptedAt',
-            'rejectionReason', 'paymentAccount', 'receipt', 'timeline', 'facility',
+            'rejectionReason', 'paymentAccount', 'receipt', 'timeline', 'facility', 'investment',
         ]
+
+    admin_view = False
+
+    def get_investment(self, txn):
+        return investments.as_dict(txn, admin=self.admin_view) if investments.earns_interest(txn) else None
 
     def repayment_data(self, rep, today, account):
         revealed = facilities.is_revealed(rep, today)
@@ -192,6 +200,7 @@ class AdminTransactionSerializer(TransactionSerializer):
     """Adds the internal slip review trail, which customers don't see."""
 
     slipTrail = serializers.SerializerMethodField()
+    admin_view = True
 
     class Meta(TransactionSerializer.Meta):
         fields = TransactionSerializer.Meta.fields + ['slipTrail']
@@ -227,7 +236,10 @@ class CreateTransactionSerializer(serializers.Serializer):
     termsAccepted = serializers.BooleanField(required=False, default=False)
     # Loans and hire-purchase: how they'll repay, and their own bank account
     repaymentFrequency = serializers.CharField(required=False, allow_blank=True, max_length=16)
+    # Loans: where it's paid out to. Investments and savings plans: where interest is sent.
     disbursementAccount = serializers.JSONField(required=False, allow_null=True)
+    # Investments: how interest is paid
+    interestOption = serializers.CharField(required=False, allow_blank=True, max_length=16)
 
     def validate_productId(self, code):
         from catalog.models import Product
@@ -247,6 +259,9 @@ class CreateTransactionSerializer(serializers.Serializer):
 
         options = product.term_options or []
         term = attrs.get('termMonths')
+        if product.type == ProductType.INVESTMENT:
+            # Every investment is a 12-month contract
+            options, term = [investments.TERM_MONTHS], investments.TERM_MONTHS
         if not options:
             term = None  # Open-ended plan
         elif len(options) == 1:
@@ -271,6 +286,19 @@ class CreateTransactionSerializer(serializers.Serializer):
         else:
             attrs['application'], attrs['documents'] = None, []
             attrs['repaymentFrequency'], attrs['disbursementAccount'] = '', None
+
+        option = attrs.get('interestOption') or ''
+        attrs['interestOption'] = ''
+        if product.type == ProductType.INVESTMENT:
+            if option not in InterestOption.values:
+                errors['interestOption'] = ['Choose how you want your interest paid: upfront, monthly or at maturity.']
+            attrs['interestOption'] = option
+        elif product.type == ProductType.SAVINGS and term:
+            # Savings earn interest paid at maturity (an open-ended plan has no maturity)
+            attrs['interestOption'] = InterestOption.MATURITY
+        if product.type == ProductType.INVESTMENT or attrs['interestOption']:
+            # Where interest is sent
+            attrs['disbursementAccount'] = self.check_bank_account(self.initial_data.get('disbursementAccount'), errors)
 
         if errors:
             raise serializers.ValidationError(errors)
@@ -314,7 +342,7 @@ class CreateTransactionSerializer(serializers.Serializer):
 
 
     def check_bank_account(self, raw, errors):
-        """The customer's own account: where a loan is paid out to."""
+        """The customer's own account: where a loan is paid out to, or investment interest sent."""
         raw = raw if isinstance(raw, dict) else {}
         account = {
             'bankName': _text(raw.get('bankName'), 100),
@@ -354,8 +382,38 @@ class ApproveSerializer(ReviewSerializer):
                                             required=False, allow_null=True)
 
 
+class InterestRateSerializer(ReviewSerializer):
+    interestRate = serializers.DecimalField(max_digits=5, decimal_places=2, min_value=0, max_value=100)
+
+
 class DisburseSerializer(serializers.Serializer):
     reference = serializers.CharField(max_length=100)
+
+
+class InterestPaymentListSerializer(serializers.Serializer):
+    """An investment's interest payment, in the admin list of payments to send."""
+
+    def to_representation(self, p):
+        txn = p.plan
+        return {
+            'id': p.pk,
+            'reference': f'{txn.reference}-I{p.number:02d}',
+            'number': p.number,
+            'count': p.count,
+            'planReference': txn.reference,
+            'productName': txn.product_name,
+            'customerId': txn.customer.public_id,
+            'customerName': txn.customer.full_name,
+            'agentCode': txn.customer.agent_code or None,
+            'option': txn.interest_option,
+            'dueDate': p.due_date.isoformat(),
+            'amount': money(p.amount),
+            'state': investments.payment_state(p),
+            'payoutAccount': txn.disbursement_account,
+            'paidAt': p.paid_at,
+            'paidBy': p.paid_by_name,
+            'payoutReference': p.payout_reference,
+        }
 
 
 class NotificationSerializer(serializers.ModelSerializer):
@@ -430,6 +488,7 @@ class WithdrawalSerializer(serializers.Serializer):
             'kind': wd.kind,
             'amount': money(wd.amount),
             'penalty': money(wd.penalty),
+            'interestDeducted': money(wd.interest_deducted),
             'payoutAmount': money(wd.payout_amount),
             'earliestPayoutDate': wd.earliest_payout_date.isoformat(),
             'bankName': wd.bank_name,

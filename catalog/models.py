@@ -39,9 +39,14 @@ class Product(models.Model):
     requirements = models.JSONField(default=list, blank=True)
     # Documents needed on top of STANDARD_DOCUMENTS: [{key, label, hint}]
     required_documents = models.JSONField(default=list, blank=True)
-    # Loans and hire-purchase: flat interest, percent of the amount per month. Blank means a
-    # Super Admin sets the rate when approving each application (e.g. it depends on the item).
+    # Loans and hire-purchase: flat interest, percent of the amount whatever the term. Blank means
+    # the default (payments.facilities.DEFAULT_INTEREST_RATE). A Super Admin can still set another
+    # rate on each application.
     interest_rate = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    # Investments and savings: yearly interest for each way of being paid ({upfront, monthly,
+    # maturity}; savings use maturity) and after a partial withdrawal ({partial}). A missing one uses
+    # payments.investments.DEFAULT_RATES.
+    interest_rates = models.JSONField(default=dict, blank=True)
     # Hire-purchase only: eligible item categories
     item_categories = models.JSONField(default=list, blank=True)
     # How money can be taken out of a plan; see payments/withdrawal_rules.py for the keys.

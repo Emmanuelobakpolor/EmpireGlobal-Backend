@@ -2,7 +2,8 @@ import re
 
 from rest_framework import serializers
 
-from payments.facilities import repayment_frequencies
+from payments.facilities import product_rate, repayment_frequencies
+from payments.investments import DEFAULT_RATES, INTEREST_TYPES, TERM_MONTHS, product_rates
 
 from .models import Product
 
@@ -38,12 +39,15 @@ class ProductSerializer(serializers.ModelSerializer):
     requirements = serializers.JSONField(required=False)
     interestRate = serializers.DecimalField(source='interest_rate', max_digits=5, decimal_places=2, min_value=0,
                                             max_value=100, required=False, allow_null=True)
+    # Investments and savings: yearly rates per way of being paid ({upfront, monthly, maturity}) and
+    # after a partial withdrawal ({partial}); one left out uses the default
+    interestRates = serializers.JSONField(source='interest_rates', required=False)
 
     class Meta:
         model = Product
         fields = ['id', 'name', 'category', 'type', 'description', 'minAmount', 'maxAmount', 'duration', 'frequency',
                   'termOptions', 'expectedReturn', 'benefits', 'clauses', 'requirements', 'requiredDocuments',
-                  'itemCategories', 'interestRate', 'status']
+                  'itemCategories', 'interestRate', 'interestRates', 'status']
 
     def to_representation(self, product):
         data = super().to_representation(product)
@@ -54,6 +58,11 @@ class ProductSerializer(serializers.ModelSerializer):
         if product.needs_application:
             # How the customer can choose to repay, read from the frequency text
             data['repaymentFrequencies'] = repayment_frequencies(product.frequency)
+            # What applications are priced at: the product's own rate, or the default
+            data['effectiveInterestRate'] = float(product_rate(product))
+        if product.type in INTEREST_TYPES:
+            # What each way of being paid earns: the product's own rates, or the defaults
+            data['interestRates'] = {k: float(v) for k, v in product_rates(product).items()}
         return data
 
     def validate_name(self, value):
@@ -99,6 +108,25 @@ class ProductSerializer(serializers.ModelSerializer):
                          **({'hint': str(doc['hint'])[:200]} if doc.get('hint') else {})})
         return docs
 
+    def validate_interestRates(self, value):
+        if value in (None, ''):
+            return {}
+        keys = set().union(*DEFAULT_RATES.values())
+        if not isinstance(value, dict) or set(value) - keys:
+            raise serializers.ValidationError(f'Interest rates are set for {", ".join(sorted(keys))} only.')
+        rates = {}
+        for option, rate in value.items():
+            if rate in (None, ''):
+                continue
+            try:
+                rate = float(rate)
+            except (TypeError, ValueError):
+                rate = -1
+            if not 0 <= rate <= 100:
+                raise serializers.ValidationError('Each interest rate must be a percentage between 0 and 100.')
+            rates[option] = rate
+        return rates
+
     def validate_itemCategories(self, value):
         if not isinstance(value, list) or any(c not in HIRE_PURCHASE_CATEGORIES for c in value):
             raise serializers.ValidationError(f'Item categories must be from: {", ".join(HIRE_PURCHASE_CATEGORIES)}.')
@@ -113,4 +141,7 @@ class ProductSerializer(serializers.ModelSerializer):
         categories = attrs.get('item_categories', getattr(self.instance, 'item_categories', []))
         if product_type == 'hire-purchase' and not categories:
             raise serializers.ValidationError({'itemCategories': ['Choose at least one eligible item category.']})
+        if product_type == 'investment':
+            # Every investment is a 12-month contract
+            attrs['term_options'] = [TERM_MONTHS]
         return attrs

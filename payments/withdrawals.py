@@ -9,7 +9,7 @@ from django.utils import timezone
 from accounts.models import Role, User
 from core import audit
 
-from . import emails
+from . import emails, investments
 from .models import BALANCE_FIELD_BY_TYPE, Notification, Transaction, Withdrawal, WithdrawalEvent
 from .notify import notify, notify_admins
 from .withdrawal_rules import quote
@@ -59,8 +59,8 @@ def request_withdrawal(customer, plan_reference, amount, bank_name, account_numb
         if q.error:
             raise WithdrawalError(q.error, 'invalid_amount', 'amount')
         wd = Withdrawal.objects.create(
-            customer=customer, plan=plan, kind=q.kind, amount=q.payout_amount + q.penalty, penalty=q.penalty,
-            payout_amount=q.payout_amount, earliest_payout_date=q.earliest_payout_date, bank_name=bank_name,
+            customer=customer, plan=plan, kind=q.kind, amount=q.payout_amount + q.penalty + q.interest_deducted,
+            penalty=q.penalty, interest_deducted=q.interest_deducted, payout_amount=q.payout_amount, earliest_payout_date=q.earliest_payout_date, bank_name=bank_name,
             account_number=account_number, account_name=account_name, note=note,
         )
         notify(customer, 'Withdrawal requested',
@@ -129,6 +129,7 @@ def approve(super_admin, wd, note=''):
         # Still there? Other withdrawals may have been approved since this was requested
         if quote(plan, exclude=wd).available < wd.amount:
             raise WithdrawalError('This plan no longer has enough money for this withdrawal.', 'insufficient_funds')
+        capital_left = quote(plan, exclude=wd).available - wd.amount
         field = BALANCE_FIELD_BY_TYPE.get(plan.product_type)
         customer = User.objects.select_for_update().get(pk=wd.customer_id)
         if not field or getattr(customer, field) < wd.amount:
@@ -139,6 +140,11 @@ def approve(super_admin, wd, note=''):
         wd.status = Withdrawal.Status.APPROVED
         wd.decided_at = timezone.now()
         wd.save(update_fields=['status', 'decided_at'])
+        if investments.earns_interest(plan) and investments.is_early(plan):
+            if wd.kind == Withdrawal.Kind.FULL:
+                investments.cancel_remaining(plan, super_admin)
+            else:
+                investments.apply_partial_withdrawal(plan, capital_left, super_admin)
         _event(wd, super_admin, 'approved', note)
         _audit(super_admin, wd, 'Withdrawal Approved', 'success',
                f'Approved {customer.full_name}\'s withdrawal of {naira(wd.amount)} from {plan.product_name}. '
