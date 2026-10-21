@@ -119,6 +119,11 @@ class Transaction(models.Model):
     disbursed_at = models.DateTimeField(null=True, blank=True)
     # Bank transfer reference for a loan, delivery note for a hire-purchase item
     disbursement_reference = models.CharField(max_length=100, blank=True)
+    # Fees, fixed on approval: taken off a loan's payout, added to a hire-purchase's repayments
+    legal_fee_percent = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    legal_fee = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    inspection_fee = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    application_fee = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
 
     # ---- Investments and savings plans (interest_rate above is the yearly rate, set on approval) ----
     # Savings plans are always paid at maturity

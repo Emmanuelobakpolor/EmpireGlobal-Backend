@@ -112,6 +112,14 @@ class TransactionSerializer(serializers.ModelSerializer):
             'amountPaid': money(paid),
             'outstanding': money(txn.total_repayable - paid) if txn.total_repayable is not None else None,
             'disbursementAccount': txn.disbursement_account,
+            'fees': {
+                'legalPercent': float(txn.legal_fee_percent), 'legal': money(txn.legal_fee),
+                'inspection': money(txn.inspection_fee), 'application': money(txn.application_fee),
+                'total': money(facilities.fees_total(txn)),
+            } if txn.legal_fee is not None else None,
+            # What a loan pays into the customer's account, after fees
+            'payoutAmount': money(facilities.payout_amount(txn))
+            if txn.legal_fee is not None and txn.product_type == ProductType.LOAN else None,
             'disbursedAt': txn.disbursed_at,
             'disbursementReference': txn.disbursement_reference,
             'nextRepayment': unpaid[0] if unpaid else None,
@@ -377,9 +385,21 @@ class RecommendSerializer(ReviewSerializer):
 
 
 class ApproveSerializer(ReviewSerializer):
-    # Loans and hire-purchase: the rate to charge, when it isn't the product's own
+    # Loans and hire-purchase (and investments, savings): the rate to charge, when it isn't the product's own
     interestRate = serializers.DecimalField(max_digits=5, decimal_places=2, min_value=0, max_value=100,
                                             required=False, allow_null=True)
+    # Loans and hire-purchase: the fees to charge, when they aren't the product's
+    legalFeePercent = serializers.DecimalField(max_digits=5, decimal_places=2, min_value=0, max_value=100,
+                                               required=False, allow_null=True)
+    inspectionFee = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=0, required=False,
+                                             allow_null=True)
+    applicationFee = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=0, required=False,
+                                              allow_null=True)
+
+    def fees(self):
+        data = self.validated_data
+        return {'legalPercent': data.get('legalFeePercent'), 'inspection': data.get('inspectionFee'),
+                'application': data.get('applicationFee')}
 
 
 class InterestRateSerializer(ReviewSerializer):

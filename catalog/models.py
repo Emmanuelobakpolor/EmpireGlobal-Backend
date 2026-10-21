@@ -47,6 +47,9 @@ class Product(models.Model):
     # maturity}; savings use maturity) and after a partial withdrawal ({partial}). A missing one uses
     # payments.investments.DEFAULT_RATES.
     interest_rates = models.JSONField(default=dict, blank=True)
+    # Loans and hire-purchase: {legalPercent, inspection, application}. A missing one uses
+    # payments.facilities.DEFAULT_FEES; a Super Admin sets the final fees on each application.
+    fees = models.JSONField(default=dict, blank=True)
     # Hire-purchase only: eligible item categories
     item_categories = models.JSONField(default=list, blank=True)
     # How money can be taken out of a plan; see payments/withdrawal_rules.py for the keys.

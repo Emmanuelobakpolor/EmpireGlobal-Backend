@@ -294,7 +294,7 @@ class ApproveView(ReviewActionView):
         serializer = ApproveSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        services.approve_payment(txn, request.user, data['note'], data.get('interestRate'))
+        services.approve_payment(txn, request.user, data['note'], data.get('interestRate'), serializer.fees())
 
 
 class RejectView(ReviewActionView):

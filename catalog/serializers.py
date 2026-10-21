@@ -2,7 +2,7 @@ import re
 
 from rest_framework import serializers
 
-from payments.facilities import product_rate, repayment_frequencies
+from payments.facilities import DEFAULT_FEES, product_fees, product_rate, repayment_frequencies
 from payments.investments import DEFAULT_RATES, INTEREST_TYPES, TERM_MONTHS, product_rates
 
 from .models import Product
@@ -42,12 +42,14 @@ class ProductSerializer(serializers.ModelSerializer):
     # Investments and savings: yearly rates per way of being paid ({upfront, monthly, maturity}) and
     # after a partial withdrawal ({partial}); one left out uses the default
     interestRates = serializers.JSONField(source='interest_rates', required=False)
+    # Loans and hire-purchase: {legalPercent, inspection, application}; one left out uses the default
+    fees = serializers.JSONField(required=False)
 
     class Meta:
         model = Product
         fields = ['id', 'name', 'category', 'type', 'description', 'minAmount', 'maxAmount', 'duration', 'frequency',
                   'termOptions', 'expectedReturn', 'benefits', 'clauses', 'requirements', 'requiredDocuments',
-                  'itemCategories', 'interestRate', 'interestRates', 'status']
+                  'itemCategories', 'interestRate', 'interestRates', 'fees', 'status']
 
     def to_representation(self, product):
         data = super().to_representation(product)
@@ -60,6 +62,8 @@ class ProductSerializer(serializers.ModelSerializer):
             data['repaymentFrequencies'] = repayment_frequencies(product.frequency)
             # What applications are priced at: the product's own rate, or the default
             data['effectiveInterestRate'] = float(product_rate(product))
+            # The fees applications start from: the product's own, or the defaults
+            data['fees'] = {k: float(v) for k, v in product_fees(product).items()}
         if product.type in INTEREST_TYPES:
             # What each way of being paid earns: the product's own rates, or the defaults
             data['interestRates'] = {k: float(v) for k, v in product_rates(product).items()}
@@ -126,6 +130,24 @@ class ProductSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError('Each interest rate must be a percentage between 0 and 100.')
             rates[option] = rate
         return rates
+
+    def validate_fees(self, value):
+        if value in (None, ''):
+            return {}
+        if not isinstance(value, dict) or set(value) - set(DEFAULT_FEES):
+            raise serializers.ValidationError('Fees are set for legalPercent, inspection and application only.')
+        fees = {}
+        for key, fee in value.items():
+            if fee in (None, ''):
+                continue
+            try:
+                fee = float(fee)
+            except (TypeError, ValueError):
+                fee = -1
+            if fee < 0 or (key == 'legalPercent' and fee > 100):
+                raise serializers.ValidationError('Fees must be zero or more, and the legal fee at most 100%.')
+            fees[key] = fee
+        return fees
 
     def validate_itemCategories(self, value):
         if not isinstance(value, list) or any(c not in HIRE_PURCHASE_CATEGORIES for c in value):

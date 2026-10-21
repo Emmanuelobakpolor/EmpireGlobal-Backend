@@ -226,6 +226,44 @@ class RepaymentTests(FacilityTestBase):
         self.assertEqual(self.customer_view(txn)['timeline'][3]['label'], 'Item Delivered')
 
 
+class FeeTests(FacilityTestBase):
+    def test_default_fees_come_off_a_loans_payout(self):
+        txn = self.apply()
+        facility = self.approve(txn)['facility']
+        # ₦120,000: legal 1% = ₦1,200, inspection ₦2,000, application ₦3,000
+        self.assertEqual(facility['fees'], {'legalPercent': 1.0, 'legal': 1200.0, 'inspection': 2000.0,
+                                            'application': 3000.0, 'total': 6200.0})
+        self.assertEqual((facility['payoutAmount'], facility['totalRepayable']), (113800.0, 126000.0))
+        self.assertIn('113,800', Notification.objects.filter(recipient=self.customer, title='Application approved')
+                      .first().message)
+        self.disburse(txn)
+        self.customer.refresh_from_db()
+        # The customer still repays on the full amount
+        self.assertEqual(self.customer.outstanding_loan, Decimal('126000'))
+
+    def test_super_admin_sets_the_fees(self):
+        txn = self.apply()
+        res = self.post(self.client_for(self.boss), self.admin_url(txn, 'approve'),
+                        {'interestRate': 5, 'legalFeePercent': 2, 'inspectionFee': 5000, 'applicationFee': 0})
+        facility = res.json()['transaction']['facility']
+        self.assertEqual((facility['fees']['total'], facility['payoutAmount']), (7400.0, 112600.0))
+
+    def test_hire_purchase_fees_are_added_to_the_repayments(self):
+        txn = self.apply(product='p9', documents=HP_DOCUMENTS, termMonths=6, amount=60000,
+                         application={'guarantor': GUARANTOR, 'item': HP_ITEM})
+        facility = self.approve(txn)['facility']
+        # ₦60,000 + 5% interest + (₦600 + ₦2,000 + ₦3,000) fees
+        self.assertEqual((facility['totalRepayable'], facility['payoutAmount']), (68600.0, None))
+        # A rate change keeps the fees in the total
+        res = self.post(self.client_for(self.boss), self.admin_url(txn, 'interest-rate'), {'interestRate': 10})
+        self.assertEqual(res.json()['transaction']['facility']['totalRepayable'], 71600.0)
+
+    def test_fees_cant_swallow_the_loan(self):
+        txn = self.apply()
+        res = self.post(self.client_for(self.boss), self.admin_url(txn, 'approve'), {'inspectionFee': 200000})
+        self.assertEqual(res.json()['code'], 'fees_too_high')
+
+
 class InterestRateChangeTests(FacilityTestBase):
     def change(self, txn, rate, client=None):
         return self.post(client or self.client_for(self.boss), self.admin_url(txn, 'interest-rate'), {'interestRate': rate})

@@ -308,6 +308,9 @@ Credit facilities the customer repays by instalments (`payments/facilities.py`).
    `totalRepayable = amount × (1 + rate%)`, whatever the term. Status → `awaiting_disbursement`.
    A Super Admin can change the rate later (`POST .../interest-rate/`) until the facility is fully
    repaid: paid instalments stand and the rest of the new total is spread over the unpaid ones.
+   **Fees** are fixed on approval too (`legalFeePercent`, `inspectionFee`, `applicationFee`; defaults
+   from the product's `fees`, else 1%, ₦2,000 and ₦3,000; the inspection fee depends on location). A
+   loan's fees come off the payout (`facility.payoutAmount`); hire-purchase adds them to `totalRepayable`.
 3. **Disburse.** Any admin records the transfer reference (loan) or delivery note (hire-purchase). The
    schedule is created from that day, split evenly (the last instalment absorbs rounding). For loans the
    customer's `outstandingLoan` goes up by the total repayable.

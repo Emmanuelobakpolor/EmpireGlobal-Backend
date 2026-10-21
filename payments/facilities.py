@@ -12,6 +12,11 @@
 Interest is flat: a percent of the amount, charged once whatever the term. It starts at the
 product's rate (DEFAULT_INTEREST_RATE when the product has none), and a Super Admin can change it
 on approval or at any time until the facility is fully repaid.
+
+Fees (legal, inspection and application) start at the product's (DEFAULT_FEES when it has none)
+and are fixed by the Super Admin on approval; the inspection fee depends on where the customer is.
+A loan's fees come off the payout (the customer still repays on the full amount); hire-purchase has
+nothing to pay out, so its fees are added to what's repaid.
 """
 
 import math
@@ -44,6 +49,8 @@ from .notify import customer_link, notify, notify_admins
 REPAYMENT_NOTICE_DAYS = 7
 # Percent of the amount, for products without a rate of their own
 DEFAULT_INTEREST_RATE = Decimal('13')
+# Legal fee is a percent of the amount; inspection and application are naira
+DEFAULT_FEES = {'legalPercent': Decimal('1'), 'inspection': Decimal('2000'), 'application': Decimal('3000')}
 ROLE_LABELS = {Role.SUPER_ADMIN: 'Super Admin', Role.ADMIN: 'Admin'}
 CENT = Decimal('0.01')
 
@@ -99,6 +106,27 @@ def product_rate(product):
 def total_repayable(amount, rate):
     interest = Decimal(amount) * Decimal(rate) / 100
     return (Decimal(amount) + interest).quantize(CENT, ROUND_HALF_UP)
+
+
+def product_fees(product):
+    """{legalPercent, inspection, application}: the product's own, or the defaults."""
+    own = (product.fees if product is not None else None) or {}
+    return {key: Decimal(str(own[key])) if own.get(key) is not None else value for key, value in DEFAULT_FEES.items()}
+
+
+def fees_total(txn):
+    return sum((f or Decimal(0) for f in (txn.legal_fee, txn.inspection_fee, txn.application_fee)), Decimal(0))
+
+
+def facility_total(txn, rate):
+    """What the customer repays at `rate`: hire-purchase adds its fees; a loan's come off the payout."""
+    total = total_repayable(txn.amount, rate)
+    return total + fees_total(txn) if txn.product_type == ProductType.HIRE_PURCHASE else total
+
+
+def payout_amount(txn):
+    """What a loan pays into the customer's account, after fees."""
+    return txn.amount - fees_total(txn) if txn.product_type == ProductType.LOAN else None
 
 
 def split(total, count):
@@ -171,30 +199,43 @@ def _audit(actor, txn, action, status, details, reference=None):
                  agent_code=txn.customer.agent_code)
 
 
-def approve_application(txn, super_admin, note='', interest_rate=None):
-    """Final approval of a locked, undecided application, at `interest_rate` or the product's rate."""
+def approve_application(txn, super_admin, note='', interest_rate=None, fees=None):
+    """Final approval of a locked, undecided application, at `interest_rate` and `fees`
+    ({legalPercent, inspection, application}; any left out are the product's)."""
     from catalog.models import Product
 
+    product = Product.objects.filter(code=txn.product_id).first()
     if interest_rate is None:
-        interest_rate = product_rate(Product.objects.filter(code=txn.product_id).first())
+        interest_rate = product_rate(product)
+    fees = {**product_fees(product), **{k: Decimal(v) for k, v in (fees or {}).items() if v is not None}}
+    txn.legal_fee_percent = fees['legalPercent']
+    txn.legal_fee = (txn.amount * fees['legalPercent'] / 100).quantize(CENT, ROUND_HALF_UP)
+    txn.inspection_fee = fees['inspection'].quantize(CENT)
+    txn.application_fee = fees['application'].quantize(CENT)
+    if txn.product_type == ProductType.LOAN and payout_amount(txn) <= 0:
+        raise FacilityError(f'The fees ({naira(fees_total(txn))}) would take the whole loan of {naira(txn.amount)}.',
+                            'fees_too_high', 'inspectionFee')
     txn.interest_rate = Decimal(interest_rate)
-    txn.total_repayable = total_repayable(txn.amount, txn.interest_rate)
+    txn.total_repayable = facility_total(txn, txn.interest_rate)
     txn.status = Transaction.Status.APPROVED
     txn.facility_status = FacilityStatus.AWAITING_DISBURSEMENT
     txn.decided_at = timezone.now()
-    txn.save(update_fields=['interest_rate', 'total_repayable', 'status', 'facility_status', 'decided_at'])
+    txn.save(update_fields=['interest_rate', 'total_repayable', 'status', 'facility_status', 'decided_at',
+                            'legal_fee_percent', 'legal_fee', 'inspection_fee', 'application_fee'])
 
     _slip_event(txn, super_admin, SlipEvent.Action.APPROVED, note)
     kind = facility_word(txn)
     _audit(super_admin, txn, 'Application Approved', 'success',
            f'Approved {txn.customer.full_name}\'s {txn.product_name} application of {naira(txn.amount)} at '
-           f'{emails.percent(txn.interest_rate)} interest; {naira(txn.total_repayable)} to repay.')
+           f'{emails.percent(txn.interest_rate)} interest and {naira(fees_total(txn))} fees; '
+           f'{naira(txn.total_repayable)} to repay.')
     if kind == 'loan':
         account = txn.disbursement_account or {}
-        next_step = (f'We\'ll pay {naira(txn.amount)} into your {account.get("bankName", "")} account '
-                     f'{account.get("accountNumber", "")} shortly.')
+        next_step = (f'We\'ll pay {naira(payout_amount(txn))} (after {naira(fees_total(txn))} fees) into your '
+                     f'{account.get("bankName", "")} account {account.get("accountNumber", "")} shortly.')
     else:
-        next_step = 'We\'ll contact you to arrange delivery of your item.'
+        next_step = (f'We\'ll contact you to arrange delivery of your item. {naira(fees_total(txn))} fees are '
+                     'included in your repayments.')
     notify(txn.customer, 'Application approved',
            f'Your {txn.product_name} application ({txn.reference}) was approved. {next_step} '
            f'Total to repay: {naira(txn.total_repayable)}.',
@@ -236,7 +277,7 @@ def change_interest_rate(txn, super_admin, rate, note=''):
             raise FacilityError(f'The rate is already {emails.percent(rate)}.', 'rate_unchanged', 'interestRate')
 
         old_rate, old_total = txn.interest_rate, txn.total_repayable
-        new_total = total_repayable(txn.amount, rate)
+        new_total = facility_total(txn, rate)
         unpaid = []
         if txn.facility_status == FacilityStatus.ACTIVE:
             reps = list(txn.repayments.select_for_update())
@@ -307,10 +348,11 @@ def disburse(txn, admin, reference):
         first_due, first_amount = plan[0]
         what = 'Loan disbursed' if kind == 'loan' else 'Item delivered'
         _audit(admin, txn, what, 'success',
-               f'{what}: {txn.product_name} for {txn.customer.full_name} ({naira(txn.amount)}). '
+               f'{what}: {txn.product_name} for {txn.customer.full_name} '
+               f'({naira(payout_amount(txn)) + " paid out of " if kind == "loan" else ""}{naira(txn.amount)}). '
                f'Reference: {txn.disbursement_reference}. {len(plan)} instalment(s) scheduled.')
         notify(txn.customer, what,
-               (f'{naira(txn.amount)} has been paid into your account for {txn.product_name}. '
+               (f'{naira(payout_amount(txn))} has been paid into your account for {txn.product_name}. '
                 if kind == 'loan' else f'Your {txn.product_name} item has been delivered. ')
                + f'Your first repayment of {naira(first_amount)} is due on {first_due:%d %b %Y}.',
                Notification.Kind.APPLICATION, Notification.Type.SUCCESS, link=customer_link(txn))

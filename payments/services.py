@@ -103,16 +103,16 @@ def _tell_recommenders(txn, decider, approved):
                Notification.Type.SUCCESS if approved else Notification.Type.ERROR, link=link)
 
 
-def approve_payment(txn, super_admin, note='', interest_rate=None):
+def approve_payment(txn, super_admin, note='', interest_rate=None, fees=None):
     """Final approval: credit the customer's balance, all or nothing. For a loan or hire-purchase
-    application, approve it at `interest_rate` (or the product's rate) instead. For an investment,
+    application, approve it at `interest_rate` and `fees` (or the product's) instead. For an investment,
     `interest_rate` (or the product's rate for the chosen option) starts its interest schedule."""
     with db_transaction.atomic():
         txn = _locked(txn)
         _require_reviewable(txn)
         if txn.is_facility:
             try:
-                facilities.approve_application(txn, super_admin, note, interest_rate)
+                facilities.approve_application(txn, super_admin, note, interest_rate, fees)
             except facilities.FacilityError as exc:
                 raise ReviewError(exc.message, exc.code) from exc
             _tell_recommenders(txn, super_admin, approved=True)

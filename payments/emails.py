@@ -155,8 +155,18 @@ def _facility_lines(txn):
         f'Term:           {txn.term_months} month(s), repaid {txn.get_repayment_frequency_display().lower()}',
     ]
     if txn.interest_rate is not None:
-        lines += [f'Interest:       {percent(txn.interest_rate)} of the amount (flat)',
-                  f'Total to repay: {naira(txn.total_repayable)}']
+        lines.append(f'Interest:       {percent(txn.interest_rate)} of the amount (flat)')
+    if txn.legal_fee is not None:
+        lines += [f'Legal fee:      {naira(txn.legal_fee)} ({percent(txn.legal_fee_percent)})',
+                  f'Inspection fee: {naira(txn.inspection_fee)}',
+                  f'Application fee: {naira(txn.application_fee)}']
+        if txn.product_type == 'loan':
+            lines.append(f'You receive:    {naira(txn.amount - txn.legal_fee - txn.inspection_fee - txn.application_fee)}'
+                         ' (fees are taken from the payout)')
+        else:
+            lines.append('                (fees are included in your repayments)')
+    if txn.total_repayable is not None:
+        lines.append(f'Total to repay: {naira(txn.total_repayable)}')
     lines.append(f'Reference:      {txn.reference}')
     return lines
 
@@ -194,7 +204,8 @@ def send_facility_started(txn, plan):
     first_due, first_amount = plan[0]
     message = '\n'.join([
         f'Hi {txn.customer.full_name},', '',
-        (f'{naira(txn.amount)} has been paid into your bank account.' if loan
+        (f'{naira(txn.amount - (txn.legal_fee or 0) - (txn.inspection_fee or 0) - (txn.application_fee or 0))} '
+         'has been paid into your bank account (your loan after fees).' if loan
          else f'Your {txn.product_name} item has been delivered.'), '',
         *_facility_lines(txn),
         f'{"Transfer ref" if loan else "Delivery note"}:   {txn.disbursement_reference}', '',
