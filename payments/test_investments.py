@@ -38,7 +38,7 @@ class ScheduleTests(InvestmentTestBase):
 
     def test_products_offer_the_default_rates(self):
         product = next(p for p in self.client.get('/api/products/').json()['products'] if p['id'] == 'p3')
-        self.assertEqual(product['interestRates'], {'upfront': 30.0, 'monthly': 36.0, 'maturity': 42.0, 'partial': 12.0})
+        self.assertEqual(product['interestRates'], {'upfront': 30.0, 'monthly': 36.0, 'maturity': 42.0})
         self.assertEqual(product['termOptions'], [12])
         savings = next(p for p in self.client.get('/api/products/').json()['products'] if p['id'] == 'p2')
         self.assertEqual(savings['interestRates'], {'maturity': 15.0, 'partial': 12.0})
@@ -180,23 +180,12 @@ class EarlyTerminationTests(InvestmentTestBase):
         self.assertEqual((inv['rate'], inv['totalInterest'], inv['payments'][0]['amount']), (12.0, 7200.0, 7200.0))
         self.assertTrue(Notification.objects.filter(recipient=self.customer, title='Interest updated').exists())
 
-    def test_partial_withdrawal_on_an_investment_claws_back_interest_paid_above_12_percent(self):
+    def test_investments_have_no_partial_withdrawals_before_maturity(self):
         txn = self.invest('monthly')
         self.approve(txn)
         Transaction.objects.filter(pk=txn.pk).update(start_date=timezone.localdate() - timedelta(days=270))
-        # Nine monthly payments of ₦3,000 made
-        admin = self.client_for(self.admin)
-        for payment in txn.interest_payments.filter(number__lte=9):
-            InterestPayment.objects.filter(pk=payment.pk).update(due_date=timezone.localdate())
-            self.assertEqual(self.pay(payment, f'TRF-{payment.number}', admin).status_code, 200)
-        # Before month 8 only the whole plan could be withdrawn; now ₦40,000 leaves ₦60,000 at 12% = ₦7,200,
-        # and ₦27,000 was paid, so ₦19,800 comes off
-        wd = self.withdraw(txn, 40000).json()['withdrawal']
-        self.assertEqual((wd['kind'], wd['interestDeducted'], wd['payoutAmount']), ('partial', 19800.0, 20200.0))
-        self.post(self.client_for(self.boss), f'/api/admin/withdrawals/{wd["reference"]}/approve/')
-        inv = self.customer_view(txn)['investment']
-        self.assertEqual(inv['rate'], 12.0)
-        self.assertEqual([p['state'] for p in inv['payments'][9:]], ['cancelled'] * 3)
+        res = self.withdraw(txn, 40000)
+        self.assertEqual(res.json()['code'], 'invalid_amount')
 
     def customer_view(self, txn):
         return self.client_for(self.customer).get(f'/api/transactions/{txn.reference}/').json()['transaction']

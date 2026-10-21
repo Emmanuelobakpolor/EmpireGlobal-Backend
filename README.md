@@ -355,16 +355,16 @@ Savings plans with a set length are always paid at maturity. Both need the custo
 | Investment | `maturity` | 42% | All at once after 12 months, alongside the capital |
 | Savings | `maturity` | 15% a year | At the end of the plan (7.5% over 6 months, 30% over 24) |
 
-A product can override these (`interestRates: {upfront, monthly, maturity, partial}`). A Super Admin's
+A product can override these (`interestRates: {upfront, monthly, maturity}`, and `partial` for savings). A Super Admin's
 final approval of the payment (`interestRate`, % a year, optional) fixes the rate, starts the plan that
 day and schedules the payments. Admins are told as each one comes within 3 days of its due date (on
 the same triggers as repayment reminders), transfer it, and record the transfer reference.
 
 Before maturity:
-- **Partial withdrawal** (from month 8, for both): the plan drops to the `partial` rate (default 12%
-  a year) on the capital left. Interest already paid above that new total comes off the payout
-  (`interestDeducted`; the quote also gives `interestRateAfter`), and when the withdrawal is approved
-  the payments still to come are recalculated, or cancelled if nothing more is owed.
+- **Partial withdrawal** (savings only, from month 8): the plan drops to the `partial` rate (default
+  12% a year) on the capital left (the quote gives `interestRateAfter`), and when the withdrawal is
+  approved the payment due at maturity is recalculated. Investments allow no partial withdrawals
+  before maturity.
 - **Full withdrawal** (early termination): all interest is forfeited. What was paid comes off the
   payout and the remaining payments are cancelled.
 

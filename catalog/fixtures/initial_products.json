@@ -25,13 +25,12 @@
       "Terminating the contract within the first 30 days attracts a 5% penalty, deducted from the amount invested.",
       "You can only stand as guarantor for another person if your active investment’s maturity date matches the last repayment date of the guaranteed person’s loan.",
       "If a person you guarantee cannot repay their loan as agreed, the loan deduction and interest shall be deducted from your investment account.",
-      "You must give 5 working days’ notice for a contract termination request to be processed for payment.",
-      "Partial withdrawal can only be made after the 8th month of the contract; interest is then 12% a year, calculated on your current invested capital only, and interest already paid above that is deducted from the withdrawal."
+      "You must give 5 working days’ notice for a contract termination request to be processed for payment."
     ],
     "status": "active",
     "withdrawalRules": {
       "allowed": true,
-      "partial_after_months": 8,
+      "partial_after_months": null,
       "early_penalty_percent": 5,
       "early_penalty_days": 30,
       "notice_working_days": 5,
@@ -64,13 +63,12 @@
       "Terminating the contract within the first 30 days attracts a 5% penalty, deducted from the amount invested.",
       "You can only stand as guarantor for another person if your active investment’s maturity date matches the last repayment date of the guaranteed person’s loan.",
       "If a person you guarantee cannot repay their loan as agreed, the loan deduction and interest shall be deducted from your investment account.",
-      "You must give 5 working days’ notice for a contract termination request to be processed for payment.",
-      "Partial withdrawal can only be made after the 8th month of the contract; interest is then 12% a year, calculated on your current invested capital only, and interest already paid above that is deducted from the withdrawal."
+      "You must give 5 working days’ notice for a contract termination request to be processed for payment."
     ],
     "status": "active",
     "withdrawalRules": {
       "allowed": true,
-      "partial_after_months": 8,
+      "partial_after_months": null,
       "early_penalty_percent": 5,
       "early_penalty_days": 30,
       "notice_working_days": 5,
@@ -111,7 +109,7 @@
       "You must give 5 working days’ notice for a contract termination request to be processed for payment.",
       "You can only stand as guarantor for another person if your active investment’s maturity date matches the last repayment date of the guaranteed person’s loan.",
       "If a person you guarantee cannot repay their loan as agreed, the loan deduction and interest shall be deducted from your investment account.",
-      "Partial withdrawal can only be made after the 8th month of the contract; interest is then 12% a year, calculated on your current invested capital only, and interest already paid above that is deducted from the withdrawal.",
+      "Partial withdrawal can only be made after the 8th month of the contract; interest is then 12% a year, calculated on your current invested capital only.",
       "Savings must be made as agreed in the contract; missed savings attract a penalty on the interest."
     ],
     "status": "active",
@@ -158,7 +156,7 @@
       "You must give 5 working days’ notice for a contract termination request to be processed for payment.",
       "You can only stand as guarantor for another person if your active investment’s maturity date matches the last repayment date of the guaranteed person’s loan.",
       "If a person you guarantee cannot repay their loan as agreed, the loan deduction and interest shall be deducted from your investment account.",
-      "Partial withdrawal can only be made after the 8th month of the contract; interest is then 12% a year, calculated on your current invested capital only, and interest already paid above that is deducted from the withdrawal.",
+      "Partial withdrawal can only be made after the 8th month of the contract; interest is then 12% a year, calculated on your current invested capital only.",
       "Savings must be made as agreed in the contract; missed savings attract a penalty on the interest."
     ],
     "status": "active",
@@ -205,7 +203,7 @@
       "You must give 5 working days’ notice for a contract termination request to be processed for payment.",
       "You can only stand as guarantor for another person if your active investment’s maturity date matches the last repayment date of the guaranteed person’s loan.",
       "If a person you guarantee cannot repay their loan as agreed, the loan deduction and interest shall be deducted from your investment account.",
-      "Partial withdrawal can only be made after the 8th month of the contract; interest is then 12% a year, calculated on your current invested capital only, and interest already paid above that is deducted from the withdrawal.",
+      "Partial withdrawal can only be made after the 8th month of the contract; interest is then 12% a year, calculated on your current invested capital only.",
       "Savings must be made as agreed in the contract; missed savings attract a penalty on the interest."
     ],
     "status": "active",

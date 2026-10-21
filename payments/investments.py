@@ -9,10 +9,11 @@ Investments run 12 months, and the customer chooses when they invest how interes
 
 Savings plans (1-24 months) earn 15% a year, paid at maturity: 7.5% over 6 months, 30% over 24.
 
-A partial withdrawal before maturity (allowed from month 8) drops the plan to 12% a year on the
-capital left. Interest already paid above that comes off the withdrawal (withdrawal_rules.quote),
-and the payments still to come are recalculated when it's approved. Ending the plan early (a full
-withdrawal) forfeits all interest: what was paid is deducted and the rest is cancelled.
+On a savings plan, a partial withdrawal before maturity (allowed from month 8) drops the plan to
+12% a year on the capital left; the payment due at maturity is recalculated when it's approved.
+Investments allow no partial withdrawals before maturity. Ending either early (a full withdrawal)
+forfeits all interest: what was paid is deducted from the payout (withdrawal_rules.quote) and the
+rest is cancelled.
 
 Those are the defaults; a product can set its own (`Product.interest_rates`), and a Super Admin can
 set the plan's rate when approving its payment. Approval starts the plan and schedules the
@@ -35,13 +36,12 @@ from .models import InterestOption, InterestPayment, Notification, ProductType, 
 from .notify import customer_link, notify, notify_admins
 
 TERM_MONTHS = 12  # Every investment
-PARTIAL = 'partial'  # The rate after a partial withdrawal before maturity
+PARTIAL = 'partial'  # Savings: the rate after a partial withdrawal before maturity
 DEFAULT_RATES = {
     ProductType.INVESTMENT: {
         InterestOption.UPFRONT: Decimal('30'),
         InterestOption.MONTHLY: Decimal('36'),
         InterestOption.MATURITY: Decimal('42'),
-        PARTIAL: Decimal('12'),
     },
     ProductType.SAVINGS: {
         InterestOption.MATURITY: Decimal('15'),
