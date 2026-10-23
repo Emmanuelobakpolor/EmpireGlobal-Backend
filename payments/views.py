@@ -16,12 +16,13 @@ from accounts.views import CsrfAPIView, error
 from core import audit
 from core.models import AuditLog
 
-from . import facilities, investments, services
+from . import ajo, facilities, investments, services
 from .files import serve_private_file
 from .models import (
     FACILITY_TYPES,
     ApplicationDocument,
     BankAccount,
+    Contribution,
     FacilityAssignment,
     FacilityStatus,
     InterestPayment,
@@ -39,6 +40,8 @@ from .serializers import (
     InterestPaymentListSerializer,
     InterestRateSerializer,
     BankAccountSerializer,
+    AjoPayoutSerializer,
+    RecordContributionSerializer,
     CreateTransactionSerializer,
     NotificationSerializer,
     ReceiptSerializer,
@@ -50,9 +53,9 @@ from .serializers import (
 )
 
 ADMIN_QUERYSET = Transaction.objects.select_related('customer').prefetch_related(
-    'slip_events', 'documents', 'repayments__events', 'interest_payments')
+    'slip_events', 'documents', 'repayments__events', 'interest_payments', 'contributions__events')
 CUSTOMER_QUERYSET = Transaction.objects.select_related('customer').prefetch_related(
-    'documents', 'repayments', 'interest_payments')
+    'documents', 'repayments', 'interest_payments', 'contributions')
 
 
 class IsCustomer(IsAuthenticated):
@@ -92,8 +95,8 @@ class TransactionListView(CsrfAPIView):
         term = data['termMonths']
         is_facility = product.type in FACILITY_TYPES
         # Loans and hire-purchase aren't paid for up front: the collection account is shown
-        # for each repayment as it comes due instead
-        account = None if is_facility else BankAccount.for_product_type(product.type)
+        # for each repayment as it comes due instead. Ajo contributions are recorded by staff.
+        account = None if is_facility or product.type == 'ajo' else BankAccount.for_product_type(product.type)
         with db_transaction.atomic():
             txn = Transaction.objects.create(
                 customer=request.user,
@@ -120,7 +123,10 @@ class TransactionListView(CsrfAPIView):
                     'interest_option': data['interestOption'],
                     'disbursement_account': data['disbursementAccount'],
                 } if data['interestOption'] else {}),
+                **({'repayment_frequency': data['repaymentFrequency']} if product.type == 'ajo' else {}),
             )
+            if ajo.is_ajo(txn):
+                ajo.start(txn, request.user)
             for spec, upload in data['documents']:
                 ApplicationDocument.objects.create(
                     transaction=txn, key=spec['key'], label=spec['label'], file=upload,
@@ -157,6 +163,8 @@ class UploadReceiptView(CsrfAPIView):
         if txn.is_facility:
             return error('Loans and hire-purchase are repaid by instalment. Upload the receipt against the '
                          'instalment instead.', 'facility_repayment')
+        if ajo.is_ajo(txn):
+            return error('Ajo contributions are recorded by our staff.', 'ajo_recorded_by_staff')
         if txn.is_final:
             return error('This payment has already been reviewed.', 'already_decided')
         serializer = ReceiptSerializer(data=request.data)
@@ -431,6 +439,64 @@ class AdminRepaymentActionView(CsrfAPIView):
         return Response({'transaction': AdminTransactionSerializer(txn).data})
 
 
+# ---- Ajo contributions ----
+
+def ajo_error(exc):
+    extra = {'errors': {exc.field: [exc.message]}} if exc.field else {}
+    return error(exc.message, exc.code, **extra)
+
+
+class AdminContributionActionView(CsrfAPIView):
+    """Any admin records a payment or recommends; a Super Admin confirms or rejects."""
+
+    permission_classes = [IsAdmin]
+    action_name = ''
+
+    def get_permissions(self):
+        if self.action_name in ('approve', 'reject'):
+            return [IsSuperAdmin()]
+        return super().get_permissions()
+
+    def post(self, request, pk):
+        contribution = get_object_or_404(Contribution, pk=pk)
+        try:
+            if self.action_name == 'record':
+                serializer = RecordContributionSerializer(data=request.data)
+                serializer.is_valid(raise_exception=True)
+                data = serializer.validated_data
+                ajo.record_payment(request.user, contribution, data['method'], data['receivedOn'], data['reference'],
+                                   data['note'])
+            elif self.action_name == 'recommend':
+                serializer = RecommendSerializer(data=request.data)
+                serializer.is_valid(raise_exception=True)
+                ajo.recommend(request.user, contribution, serializer.validated_data['decision'] == 'approve',
+                              serializer.validated_data['note'])
+            else:
+                serializer = ReviewSerializer(data=request.data)
+                serializer.is_valid(raise_exception=True)
+                action = ajo.approve if self.action_name == 'approve' else ajo.reject
+                action(request.user, contribution, serializer.validated_data['note'])
+        except ajo.AjoError as exc:
+            return ajo_error(exc)
+        txn = get_object_or_404(ADMIN_QUERYSET, pk=contribution.plan_id)
+        return Response({'transaction': AdminTransactionSerializer(txn).data})
+
+
+class AjoPayoutView(AdminTransactionView):
+    """Any admin arranges an Ajo plan's payout once its cycle has ended."""
+
+    def post(self, request, reference):
+        serializer = AjoPayoutSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        try:
+            ajo.arrange_payout(request.user, self.get_txn(reference), data['bankName'], data['accountNumber'],
+                               data['accountName'], data['note'])
+        except ajo.AjoError as exc:
+            return ajo_error(exc)
+        return self.respond(reference)
+
+
 # ---- Admin: collection bank accounts ----
 
 class SuperAdminWrites(IsAdmin):
@@ -557,7 +623,9 @@ class WithdrawablePlansView(CsrfAPIView):
     permission_classes = [IsCustomer]
 
     def get(self, request):
-        plans = Transaction.objects.filter(customer=request.user, status=Transaction.Status.APPROVED)
+        # Ajo payouts are arranged by staff
+        plans = Transaction.objects.filter(customer=request.user, status=Transaction.Status.APPROVED).exclude(
+            product_type='ajo')
         return Response({'plans': [
             {'reference': p.reference, 'productName': p.product_name, 'productType': p.product_type,
              'amount': money(p.amount), 'startDate': p.start_date, 'endDate': p.end_date,

@@ -11,6 +11,8 @@ A product's `withdrawal_rules` (JSON) can hold:
   notice_working_days   int    Earliest payout is this many working days (Mon-Fri) after the request
   notice_hours          int    Or this many hours after the request
   payout                str    'any' (default), 'month_end' or 'quarter_end': when payouts happen
+Ajo plans ignore these: their savings are paid out in one go once the cycle ends, less the
+service charge (payments/ajo.py).
 Interest is tracked for investments and savings plans (payments/investments.py). Before maturity,
 ending the plan forfeits all interest paid, and a partial withdrawal drops the plan to the partial
 rate on the capital left; either way interest already paid above what's now earned comes off the
@@ -25,7 +27,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from django.db.models import Sum
 from django.utils import timezone
 
-from . import investments
+from . import ajo, investments
 from .serializers import add_months
 
 # The rules for the official catalogue are set by catalog/migrations/0004_default_withdrawal_rules.py
@@ -65,6 +67,7 @@ class Quote:
     penalty: Decimal = Decimal('0')
     interest_deducted: Decimal = Decimal('0')
     interest_rate_after: Decimal | None = None  # A partial withdrawal before maturity lowers the rate
+    service_charge: Decimal = Decimal('0')       # Ajo: one contribution, taken off the payout
     payout_amount: Decimal = Decimal('0')
     earliest_payout_date: date | None = None
     reason: str = ''                 # Why the plan can't be withdrawn from right now
@@ -77,7 +80,7 @@ class Quote:
             'matured': self.matured, 'kind': self.kind, 'penaltyPercent': float(self.penalty_percent),
             'penalty': float(self.penalty), 'interestDeducted': float(self.interest_deducted),
             'interestRateAfter': float(self.interest_rate_after) if self.interest_rate_after is not None else None,
-            'payoutAmount': float(self.payout_amount),
+            'serviceCharge': float(self.service_charge), 'payoutAmount': float(self.payout_amount),
             'earliestPayoutDate': self.earliest_payout_date.isoformat() if self.earliest_payout_date else None,
             'reason': self.reason, 'error': self.error, 'notes': self.notes,
         }
@@ -107,6 +110,8 @@ def quote(txn, amount=None, today=None, now=None, exclude=None):
     if txn.status != 'approved':
         q.reason = 'Only plans whose payment has been approved can be withdrawn from.'
         return q
+    if ajo.is_ajo(txn):
+        return _ajo_quote(txn, q, amount, today, exclude)
     q.available = max(Decimal('0'), txn.amount - withdrawn_from(txn, exclude)).quantize(CENT)
     if not rules.get('allowed'):
         q.reason = 'This product has no withdrawals (nothing is saved or invested in it).'
@@ -195,4 +200,37 @@ def quote(txn, amount=None, today=None, now=None, exclude=None):
                 q.notes.append(f'₦{paid:,.2f} interest has already been paid to you, so the ₦{excess:,.2f} above '
                                'that is deducted from this withdrawal.')
     q.payout_amount = amount - q.penalty - q.interest_deducted
+    return q
+
+
+def _ajo_quote(txn, q, amount, today, exclude):
+    """An Ajo plan pays out everything saved, once, when the cycle ends, less one contribution."""
+    saved = ajo.saved(txn)
+    q.available = max(Decimal('0'), saved - withdrawn_from(txn, exclude)).quantize(CENT)
+    if not txn.contributions.exists():
+        q.reason = 'This Ajo plan starts once your first contribution is confirmed.'
+        return q
+    if q.available <= 0:
+        q.reason = 'This Ajo plan has already been paid out or requested.'
+        return q
+    if not ajo.has_ended(txn, today):
+        q.reason = f'Your Ajo savings are paid out when the cycle ends on {txn.end_date:%d %b %Y}.'
+        return q
+    if txn.contributions.filter(status='pending').exists():
+        q.reason = 'A contribution is still being confirmed. You can request your payout once it has been.'
+        return q
+    q.allowed = True
+    q.matured = True
+    q.kind = 'full'
+    q.service_charge = ajo.service_charge(txn, saved)
+    q.earliest_payout_date = today
+    q.notes.append(f'The service charge of one contribution ({ajo.naira(q.service_charge)}) is taken off your payout.')
+    if amount is None:
+        q.payout_amount = q.available - q.service_charge
+        return q
+    amount = Decimal(amount).quantize(CENT)
+    if amount != q.available:
+        q.error = f'Ajo savings are paid out in full: ₦{q.available:,.2f}.'
+        return q
+    q.payout_amount = amount - q.service_charge
     return q

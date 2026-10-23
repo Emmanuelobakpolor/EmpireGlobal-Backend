@@ -10,6 +10,8 @@ class ProductType(models.TextChoices):
     SAVINGS = 'savings', 'Savings'
     INVESTMENT = 'investment', 'Investment'
     THRIFT = 'thrift', 'Thrift'
+    # Esusu: a fixed contribution every day or week for a cycle, paid back at the end less one contribution
+    AJO = 'ajo', 'Ajo (Esusu)'
     LOAN = 'loan', 'Loan'
     HIRE_PURCHASE = 'hire-purchase', 'Hire-Purchase'
 
@@ -18,6 +20,7 @@ REFERENCE_CODES = {
     ProductType.SAVINGS: 'SAV',
     ProductType.INVESTMENT: 'INV',
     ProductType.THRIFT: 'THR',
+    ProductType.AJO: 'AJO',
     ProductType.LOAN: 'LN',
     ProductType.HIRE_PURCHASE: 'HP',
 }
@@ -27,6 +30,7 @@ REFERENCE_CODES = {
 BALANCE_FIELD_BY_TYPE = {
     ProductType.SAVINGS: 'savings_balance',
     ProductType.THRIFT: 'savings_balance',
+    ProductType.AJO: 'ajo_balance',
     ProductType.INVESTMENT: 'investment_balance',
 }
 
@@ -107,7 +111,7 @@ class Transaction(models.Model):
     rejection_reason = models.CharField(max_length=500, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
 
-    # ---- Loans and hire-purchase only ----
+    # ---- Loans and hire-purchase only (repayment_frequency is also how often an Ajo plan is paid into) ----
     facility_status = models.CharField(max_length=24, choices=FacilityStatus.choices, blank=True)
     repayment_frequency = models.CharField(max_length=16, choices=RepaymentFrequency.choices, blank=True)
     # Flat interest, percent of the amount whatever the term; set on approval, and a Super Admin can
@@ -416,6 +420,8 @@ class Withdrawal(models.Model):
     # Interest already paid that the plan no longer earns (ending it early, or a partial withdrawal
     # before maturity), taken off the payout
     interest_deducted = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    # Ajo: the collector's charge (one contribution per cycle), taken off the payout
+    service_charge = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     payout_amount = models.DecimalField(max_digits=14, decimal_places=2)
     earliest_payout_date = models.DateField()
     bank_name = models.CharField(max_length=100)
@@ -450,6 +456,66 @@ class WithdrawalEvent(models.Model):
     """One step in a withdrawal's review: recommended, approved, rejected, paid or cancelled."""
 
     withdrawal = models.ForeignKey(Withdrawal, on_delete=models.CASCADE, related_name='events')
+    action = models.CharField(max_length=32)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
+    actor_name = models.CharField(max_length=150)
+    actor_role = models.CharField(max_length=16)
+    note = models.CharField(max_length=500, blank=True)
+    at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ['at', 'pk']
+
+
+class Contribution(models.Model):
+    """One contribution to an Ajo plan: due on a date, paid in cash or by transfer and recorded by
+    staff. A Super Admin's confirmation credits it; the customer only sees it."""
+
+    class Status(models.TextChoices):
+        SCHEDULED = 'scheduled', 'Scheduled'
+        # Recorded by an Admin, awaiting a Super Admin's confirmation
+        PENDING = 'pending', 'Pending confirmation'
+        PAID = 'paid', 'Paid'
+
+    class Method(models.TextChoices):
+        TRANSFER = 'transfer', 'Bank transfer'
+        CASH = 'cash', 'Cash'
+
+    plan = models.ForeignKey(Transaction, on_delete=models.CASCADE, related_name='contributions')
+    number = models.PositiveSmallIntegerField()
+    due_date = models.DateField()
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.SCHEDULED)
+    method = models.CharField(max_length=16, choices=Method.choices, blank=True)
+    # Transfers: the collection account it was paid into
+    paid_to = models.JSONField(null=True, blank=True)
+    # Who recorded it, when the money came in, and the receipt or transfer number
+    recorded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name='+')
+    recorded_by_name = models.CharField(max_length=150, blank=True)
+    received_on = models.DateField(null=True, blank=True)
+    payment_reference = models.CharField(max_length=100, blank=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+    # Why the last payment wasn't accepted; cleared when it's paid again
+    rejection_reason = models.CharField(max_length=500, blank=True)
+
+    class Meta:
+        ordering = ['plan', 'number']
+        constraints = [models.UniqueConstraint(fields=['plan', 'number'], name='one_contribution_per_number')]
+
+    def __str__(self):
+        return self.reference
+
+    @property
+    def reference(self):
+        # Used as the transfer narration so admins can match the payment
+        return f'{self.plan.reference}-C{self.number:02d}'
+
+
+class ContributionEvent(models.Model):
+    """One step in a contribution's review: recorded, recommended, confirmed or rejected."""
+
+    contribution = models.ForeignKey(Contribution, on_delete=models.CASCADE, related_name='events')
     action = models.CharField(max_length=32)
     actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
     actor_name = models.CharField(max_length=150)

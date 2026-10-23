@@ -53,14 +53,19 @@ def request_withdrawal(customer, plan_reference, amount, bank_name, account_numb
         plan = Transaction.objects.select_for_update().filter(reference=plan_reference, customer=customer).first()
         if not plan:
             raise WithdrawalError('Plan not found.', 'plan_not_found', 'planReference')
+        if plan.product_type == 'ajo':
+            raise WithdrawalError('Ajo payouts are arranged by our staff when your cycle ends.', 'ajo_paid_by_staff',
+                                  'planReference')
         q = quote(plan, amount)
         if not q.allowed:
             raise WithdrawalError(q.reason, 'not_withdrawable', 'planReference')
         if q.error:
             raise WithdrawalError(q.error, 'invalid_amount', 'amount')
         wd = Withdrawal.objects.create(
-            customer=customer, plan=plan, kind=q.kind, amount=q.payout_amount + q.penalty + q.interest_deducted,
-            penalty=q.penalty, interest_deducted=q.interest_deducted, payout_amount=q.payout_amount, earliest_payout_date=q.earliest_payout_date, bank_name=bank_name,
+            customer=customer, plan=plan, kind=q.kind,
+            amount=q.payout_amount + q.penalty + q.interest_deducted + q.service_charge,
+            penalty=q.penalty, interest_deducted=q.interest_deducted, service_charge=q.service_charge,
+            payout_amount=q.payout_amount, earliest_payout_date=q.earliest_payout_date, bank_name=bank_name,
             account_number=account_number, account_name=account_name, note=note,
         )
         notify(customer, 'Withdrawal requested',
@@ -81,6 +86,8 @@ def cancel(customer, wd):
             raise WithdrawalError('Withdrawal not found.', 'not_found')
         if wd.status != Withdrawal.Status.PENDING:
             raise WithdrawalError('Only a withdrawal that is still being reviewed can be cancelled.', 'not_cancellable')
+        if wd.plan.product_type == 'ajo':
+            raise WithdrawalError('Ajo payouts are arranged by our staff and can\'t be cancelled here.', 'not_cancellable')
         wd.status = Withdrawal.Status.CANCELLED
         wd.decided_at = timezone.now()
         wd.save(update_fields=['status', 'decided_at'])

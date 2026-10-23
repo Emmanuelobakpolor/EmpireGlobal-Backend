@@ -2,6 +2,7 @@ import re
 
 from rest_framework import serializers
 
+from payments.ajo import contribution_frequencies
 from payments.facilities import DEFAULT_FEES, product_fees, product_rate, repayment_frequencies
 from payments.investments import DEFAULT_RATES, INTEREST_TYPES, TERM_MONTHS, product_rates
 
@@ -64,6 +65,9 @@ class ProductSerializer(serializers.ModelSerializer):
             data['effectiveInterestRate'] = float(product_rate(product))
             # The fees applications start from: the product's own, or the defaults
             data['fees'] = {k: float(v) for k, v in product_fees(product).items()}
+        if product.type == 'ajo':
+            # How often the customer can choose to contribute, read from the frequency text
+            data['contributionFrequencies'] = contribution_frequencies(product)
         if product.type in INTEREST_TYPES:
             # What each way of being paid earns: the product's own rates, or the defaults
             data['interestRates'] = {k: float(v) for k, v in product_rates(product).items()}
@@ -163,6 +167,10 @@ class ProductSerializer(serializers.ModelSerializer):
         categories = attrs.get('item_categories', getattr(self.instance, 'item_categories', []))
         if product_type == 'hire-purchase' and not categories:
             raise serializers.ValidationError({'itemCategories': ['Choose at least one eligible item category.']})
+        terms = attrs.get('term_options', getattr(self.instance, 'term_options', None))
+        if product_type == 'ajo' and not terms:
+            # The payout comes when the cycle ends, so it needs a length
+            raise serializers.ValidationError({'termOptions': ['Set at least one cycle length in months.']})
         if product_type == 'investment':
             # Every investment is a 12-month contract
             attrs['term_options'] = [TERM_MONTHS]

@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 BALANCE_LABELS = {
     'savings_balance': 'Savings balance',
+    'ajo_balance': 'Ajo balance',
     'investment_balance': 'Investment balance',
     'outstanding_loan': 'Outstanding loan',
 }

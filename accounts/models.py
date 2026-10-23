@@ -91,6 +91,8 @@ class User(AbstractBaseUser, PermissionsMixin):
     # (see payments.services.approve_payment).
     savings_balance = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     investment_balance = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    # Confirmed Ajo contributions not yet paid out (see payments.ajo)
+    ajo_balance = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     outstanding_loan = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     date_joined = models.DateTimeField(default=timezone.now)
 

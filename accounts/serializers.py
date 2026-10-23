@@ -88,6 +88,7 @@ class UserSerializer(serializers.ModelSerializer):
     # Balances change only when a Super Admin approves a payment
     savingsBalance = serializers.FloatField(source='savings_balance', read_only=True)
     investmentBalance = serializers.FloatField(source='investment_balance', read_only=True)
+    ajoBalance = serializers.FloatField(source='ajo_balance', read_only=True)
     outstandingLoan = serializers.FloatField(source='outstanding_loan', read_only=True)
     totalBalance = serializers.SerializerMethodField()
     avatarUrl = serializers.SerializerMethodField()
@@ -97,14 +98,14 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ['id', 'fullName', 'firstName', 'lastName', 'email', 'phone', 'agentCode', 'role', 'status', 'authProvider', 'emailVerified',
-                  'joined', 'nextOfKin', 'mustChangePassword', 'savingsBalance', 'investmentBalance', 'outstandingLoan',
+                  'joined', 'nextOfKin', 'mustChangePassword', 'savingsBalance', 'investmentBalance', 'ajoBalance', 'outstandingLoan',
                   'totalBalance', 'avatarUrl', 'hasPassword']
         # Email changes go through the confirmation-code flow; role and status are set by admins
         read_only_fields = ['email', 'role', 'status']
 
     def get_totalBalance(self, user):
         # As shown in the app: what the customer holds, not counting loans
-        return float(user.savings_balance + user.investment_balance)
+        return float(user.savings_balance + user.investment_balance + user.ajo_balance)
 
     def get_avatarUrl(self, user):
         return avatar_url(user)

@@ -36,7 +36,7 @@ class ProductTests(TestCase):
     def test_catalogue_is_loaded_and_public(self):
         Product.objects.filter(code='p12').update(status='disabled')
         products = APIClient().get('/api/products/').json()['products']
-        self.assertEqual(len(products), 15)
+        self.assertEqual(len(products), 16)
         self.assertNotIn('p12', [p['id'] for p in products])
         first = products[0]
         self.assertEqual((first['id'], first['minAmount']), ('p3', 100000.0))
@@ -47,12 +47,12 @@ class ProductTests(TestCase):
         res = self.client.post('/api/admin/products/', NEW_PRODUCT, format='json', HTTP_X_CSRFTOKEN=self.csrf())
         self.assertEqual(res.status_code, 201, res.content)
         product = res.json()['product']
-        self.assertEqual(product['id'], 'p17')
+        self.assertEqual(product['id'], 'p18')
         self.assertEqual((product['termOptions'], product['benefits']), ([3, 6], ['Bonus at maturity']))
 
-        res = self.client.patch('/api/admin/products/p17/', {'status': 'disabled'}, format='json', HTTP_X_CSRFTOKEN=self.csrf())
+        res = self.client.patch('/api/admin/products/p18/', {'status': 'disabled'}, format='json', HTTP_X_CSRFTOKEN=self.csrf())
         self.assertEqual(res.json()['product']['status'], 'disabled')
-        self.assertEqual(len(self.client.get('/api/admin/products/').json()['products']), 17)
+        self.assertEqual(len(self.client.get('/api/admin/products/').json()['products']), 18)
         self.assertTrue(AuditLog.objects.filter(action='Product Disabled', reference='Festive Savings').exists())
 
     def test_validation(self):

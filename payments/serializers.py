@@ -7,12 +7,13 @@ from rest_framework import serializers
 
 from accounts.serializers import NextOfKinField, person_name
 
-from . import facilities, investments
+from . import ajo, facilities, investments
 from .facilities import add_months  # noqa: F401 - imported from here by views
 from .files import validate_upload
 from .models import (
     ApplicationDocument,
     BankAccount,
+    Contribution,
     FacilityAssignment,
     InterestOption,
     Notification,
@@ -60,19 +61,26 @@ class TransactionSerializer(serializers.ModelSerializer):
     facility = serializers.SerializerMethodField()
     # Investments: how interest is paid, where to, and its schedule
     investment = serializers.SerializerMethodField()
+    # Ajo: the contributions, what's saved, the charge and the statement
+    ajo = serializers.SerializerMethodField()
 
     class Meta:
         model = Transaction
         fields = [
             'id', 'reference', 'customerId', 'customerName', 'productId', 'productName', 'productType', 'amount',
             'date', 'termMonths', 'startDate', 'endDate', 'status', 'application', 'nextOfKin', 'termsAcceptedAt',
-            'rejectionReason', 'paymentAccount', 'receipt', 'timeline', 'facility', 'investment',
+            'rejectionReason', 'paymentAccount', 'receipt', 'timeline', 'facility', 'investment', 'ajo',
         ]
 
     admin_view = False
 
     def get_investment(self, txn):
         return investments.as_dict(txn, admin=self.admin_view) if investments.earns_interest(txn) else None
+
+    def get_ajo(self, txn):
+        if not ajo.is_ajo(txn):
+            return None
+        return ajo.as_dict(txn, admin=self.admin_view)
 
     def repayment_data(self, rep, today, account):
         revealed = facilities.is_revealed(rep, today)
@@ -158,6 +166,8 @@ class TransactionSerializer(serializers.ModelSerializer):
     def get_timeline(self, txn):
         if txn.is_facility:
             return self.facility_timeline(txn)
+        if ajo.is_ajo(txn):
+            return self.ajo_timeline(txn)
         decided = txn.decided_at
         steps = [
             {'label': 'Application Submitted' if txn.application else 'Transaction Created', 'done': True, 'date': txn.created_at},
@@ -194,6 +204,18 @@ class TransactionSerializer(serializers.ModelSerializer):
             {'label': 'Fully Repaid', 'done': status == 'completed', 'date': completed_at},
         ]
         return self.format_steps(steps)
+
+    def ajo_timeline(self, txn):
+        payout = txn.withdrawals.exclude(status__in=('rejected', 'cancelled')).order_by('-created_at').first()
+        ended = ajo.has_ended(txn)
+        return self.format_steps([
+            {'label': 'Joined', 'done': True, 'date': txn.created_at},
+            {'label': 'Saving', 'done': ended, 'current': not ended},
+            {'label': 'Cycle Ended', 'done': ended},
+            {'label': 'Payout Approved', 'done': bool(payout and payout.decided_at), 'date': payout and payout.decided_at,
+             'current': ended and not (payout and payout.decided_at)},
+            {'label': 'Paid Out', 'done': bool(payout and payout.paid_at), 'date': payout and payout.paid_at},
+        ])
 
     def format_steps(self, steps):
         for step in steps:
@@ -248,6 +270,8 @@ class CreateTransactionSerializer(serializers.Serializer):
     disbursementAccount = serializers.JSONField(required=False, allow_null=True)
     # Investments: how interest is paid
     interestOption = serializers.CharField(required=False, allow_blank=True, max_length=16)
+    # Ajo: how often they'll contribute
+    contributionFrequency = serializers.CharField(required=False, allow_blank=True, max_length=16)
 
     def validate_productId(self, code):
         from catalog.models import Product
@@ -294,6 +318,14 @@ class CreateTransactionSerializer(serializers.Serializer):
         else:
             attrs['application'], attrs['documents'] = None, []
             attrs['repaymentFrequency'], attrs['disbursementAccount'] = '', None
+        if product.type == ProductType.AJO:
+            frequencies = ajo.contribution_frequencies(product)
+            frequency = attrs.get('contributionFrequency') or (frequencies[0] if len(frequencies) == 1 else '')
+            if frequency not in frequencies:
+                errors['contributionFrequency'] = [f'Choose how often you will contribute: {", ".join(frequencies)}.']
+            if not term:
+                errors['termMonths'] = ['This Ajo product has no cycle length set. Please contact support.']
+            attrs['repaymentFrequency'] = frequency
 
         option = attrs.get('interestOption') or ''
         attrs['interestOption'] = ''
@@ -509,6 +541,7 @@ class WithdrawalSerializer(serializers.Serializer):
             'amount': money(wd.amount),
             'penalty': money(wd.penalty),
             'interestDeducted': money(wd.interest_deducted),
+            'serviceCharge': money(wd.service_charge),
             'payoutAmount': money(wd.payout_amount),
             'earliestPayoutDate': wd.earliest_payout_date.isoformat(),
             'bankName': wd.bank_name,
@@ -566,3 +599,26 @@ class CreateWithdrawalSerializer(serializers.Serializer):
 
 class PayoutSerializer(serializers.Serializer):
     payoutReference = serializers.CharField(max_length=100)
+
+
+class AjoPayoutSerializer(serializers.Serializer):
+    """The customer's own account the payout goes to."""
+
+    bankName = serializers.CharField(max_length=100)
+    accountNumber = serializers.RegexField(r'^\d{10}$', error_messages={'invalid': 'Enter the 10-digit NUBAN account number.'})
+    accountName = serializers.CharField(max_length=150)
+    note = serializers.CharField(max_length=300, required=False, allow_blank=True, default='')
+
+
+class RecordContributionSerializer(serializers.Serializer):
+    """A contribution taken by staff: cash, or a transfer seen in the bank."""
+
+    method = serializers.ChoiceField(choices=Contribution.Method.choices)
+    receivedOn = serializers.DateField()
+    reference = serializers.CharField(max_length=100, required=False, allow_blank=True, default='')
+    note = serializers.CharField(max_length=300, required=False, allow_blank=True, default='')
+
+    def validate(self, attrs):
+        if attrs['method'] == Contribution.Method.TRANSFER and not attrs['reference'].strip():
+            raise serializers.ValidationError({'reference': ['Enter the transfer reference.']})
+        return attrs
