@@ -152,6 +152,19 @@ class SignupDetailsSerializer(serializers.Serializer):
         return code
 
 
+class StaffRegisterCustomerSerializer(SignupDetailsSerializer):
+    """A customer registered by staff (e.g. an Ajo customer who pays cash). The email is optional:
+    without one the customer has no app access, and staff keep them informed."""
+
+    email = serializers.EmailField(required=False, allow_blank=True, default='')
+
+    def validate_email(self, value):
+        value = (value or '').strip().lower()
+        if value and User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError('An account with this email already exists.')
+        return value
+
+
 class RegisterSerializer(SignupDetailsSerializer):
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True, trim_whitespace=False)
@@ -214,6 +227,14 @@ class CustomerAccountSerializer(UserSerializer):
     """A customer as admins see them. Admins may only change the status."""
 
     status = serializers.ChoiceField(choices=Status.choices)
+
+    def to_representation(self, user):
+        data = super().to_representation(user)
+        # Registered by staff without an email: no app access, and no address to show
+        data['hasEmail'] = user.has_email
+        if not user.has_email:
+            data['email'] = ''
+        return data
 
     def get_fields(self):
         # Meta.read_only_fields skips explicitly declared fields, so lock them here

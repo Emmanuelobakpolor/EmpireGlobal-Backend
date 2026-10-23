@@ -96,7 +96,11 @@ class TransactionListView(CsrfAPIView):
         is_facility = product.type in FACILITY_TYPES
         # Loans and hire-purchase aren't paid for up front: the collection account is shown
         # for each repayment as it comes due instead. Ajo contributions are recorded by staff.
-        account = None if is_facility or product.type == 'ajo' else BankAccount.for_product_type(product.type)
+        account = None if is_facility else BankAccount.for_product_type(product.type)
+        if product.type == 'ajo':
+            with db_transaction.atomic():
+                txn = ajo.join(request.user, product, data['amount'], term, data['repaymentFrequency'], request.user)
+            return Response({'transaction': TransactionSerializer(txn).data}, status=status.HTTP_201_CREATED)
         with db_transaction.atomic():
             txn = Transaction.objects.create(
                 customer=request.user,
@@ -123,10 +127,7 @@ class TransactionListView(CsrfAPIView):
                     'interest_option': data['interestOption'],
                     'disbursement_account': data['disbursementAccount'],
                 } if data['interestOption'] else {}),
-                **({'repayment_frequency': data['repaymentFrequency']} if product.type == 'ajo' else {}),
             )
-            if ajo.is_ajo(txn):
-                ajo.start(txn, request.user)
             for spec, upload in data['documents']:
                 ApplicationDocument.objects.create(
                     transaction=txn, key=spec['key'], label=spec['label'], file=upload,

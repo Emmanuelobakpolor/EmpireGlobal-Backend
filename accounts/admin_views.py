@@ -1,14 +1,15 @@
 """Admin-portal endpoints for managing admin and customer accounts."""
 
+from django.db import transaction as db_transaction
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.response import Response
 
 from core import audit
 
-from .models import Role, Status, User
+from .models import Role, Status, User, placeholder_email
 from .permissions import IsAdmin, IsSuperAdmin
-from .serializers import AdminAccountSerializer, CustomerAccountSerializer
+from .serializers import AdminAccountSerializer, CustomerAccountSerializer, StaffRegisterCustomerSerializer
 from .views import CsrfAPIView, error
 
 ADMIN_ROLES = [Role.ADMIN, Role.SUPER_ADMIN]
@@ -77,6 +78,68 @@ class CustomerListView(CsrfAPIView):
     def get(self, request):
         customers = User.objects.filter(role=Role.CUSTOMER)
         return Response({'customers': CustomerAccountSerializer(customers, many=True).data})
+
+    def post(self, request):
+        """Staff register a customer, and can start their Ajo plan in the same step (`ajo`)."""
+        from payments.serializers import AjoPlanSerializer, TransactionSerializer
+
+        serializer = StaffRegisterCustomerSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        plan = None
+        if request.data.get('ajo'):
+            plan = AjoPlanSerializer(data=request.data['ajo'])
+            if not plan.is_valid():
+                return Response({'ajo': plan.errors, 'detail': first_error(plan.errors)},
+                                status=status.HTTP_400_BAD_REQUEST)
+        with db_transaction.atomic():
+            # No password: staff-registered customers don't sign in until given access
+            customer = User.objects.create_user(
+                data['email'] or placeholder_email(), None, full_name=data['fullName'], phone=data['phone'],
+                agent_code=data.get('agentCode', ''), role=Role.CUSTOMER, status=Status.ACTIVE,
+            )
+            audit.record(request.user, 'Customer Registered',
+                         f'Registered {customer.full_name} ({customer.phone}'
+                         f'{", " + customer.email if customer.has_email else ", no email"}).',
+                         reference=customer.public_id, status='success', agent_code=customer.agent_code)
+            txn = start_ajo(request.user, customer, plan.validated_data) if plan else None
+        return Response({
+            'customer': CustomerAccountSerializer(customer).data,
+            'transaction': TransactionSerializer(txn).data if txn else None,
+        }, status=status.HTTP_201_CREATED)
+
+
+def first_error(errors):
+    for value in errors.values():
+        if isinstance(value, list) and value:
+            return str(value[0])
+    return 'Check the Ajo plan details.'
+
+
+def start_ajo(admin, customer, data):
+    from payments import ajo
+
+    return ajo.join(customer, data['productId'], data['amount'], data['termMonths'], data['contributionFrequency'],
+                    admin)
+
+
+class CustomerAjoView(CsrfAPIView):
+    """Staff start an Ajo plan for an existing customer."""
+
+    permission_classes = [IsAdmin]
+
+    def post(self, request, public_id):
+        from payments.serializers import AdminTransactionSerializer, AjoPlanSerializer
+
+        customer = get_object_or_404(User, public_id=public_id, role=Role.CUSTOMER)
+        if customer.status != Status.ACTIVE:
+            return Response({'detail': 'Only an active customer can start an Ajo plan.', 'code': 'not_active'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        serializer = AjoPlanSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        with db_transaction.atomic():
+            txn = start_ajo(request.user, customer, serializer.validated_data)
+        return Response({'transaction': AdminTransactionSerializer(txn).data}, status=status.HTTP_201_CREATED)
 
 
 class CustomerDetailView(CsrfAPIView):

@@ -108,8 +108,23 @@ def contribution_state(c, today=None):
     return 'upcoming'
 
 
-def start(txn, customer):
-    """The customer has just joined: the cycle starts today with every contribution scheduled."""
+def join(customer, product, amount, term_months, frequency, actor):
+    """Start an Ajo plan for `customer`: by the customer in the app, or by staff (`actor`)."""
+    now = timezone.now()
+    today = timezone.localdate()
+    txn = Transaction.objects.create(
+        customer=customer, product_id=product.code, product_name=product.name, product_type=product.type,
+        amount=amount, term_months=term_months, start_date=today, end_date=add_months(today, term_months),
+        terms_accepted_at=now if product.clauses else None, repayment_frequency=frequency, created_at=now,
+    )
+    start(txn, actor)
+    return txn
+
+
+def start(txn, actor):
+    """The plan has just been made: the cycle starts today with every contribution scheduled."""
+    customer = txn.customer
+    by_staff = actor.pk != customer.pk
     today = timezone.localdate()
     dates = due_dates(today, txn.term_months, txn.repayment_frequency)
     Contribution.objects.bulk_create([
@@ -121,17 +136,18 @@ def start(txn, customer):
     txn.end_date = add_months(today, txn.term_months or 1)
     txn.save(update_fields=['status', 'decided_at', 'start_date', 'end_date'])
     each = f'{len(dates)} {txn.repayment_frequency} contributions of {naira(txn.amount)}'
-    audit.record(customer, 'Ajo Plan Joined',
-                 f'{customer.full_name} joined {txn.product_name}, running {today:%d %b %Y} to '
-                 f'{txn.end_date:%d %b %Y}: {each}.',
+    who = f"Started {customer.full_name}'s" if by_staff else f'{customer.full_name} joined'
+    audit.record(actor, 'Ajo Plan Started' if by_staff else 'Ajo Plan Joined',
+                 f'{who} {txn.product_name}, running {today:%d %b %Y} to {txn.end_date:%d %b %Y}: {each}.',
                  reference=txn.reference, status='success', agent_code=customer.agent_code)
     notify(customer, 'Ajo plan started',
            f'Your {txn.product_name} ({txn.reference}) has started: {each}, ending {txn.end_date:%d %b %Y}. '
            'Our staff will record each contribution you make, and your Ajo balance updates as they do.',
            Notification.Kind.PAYMENT, Notification.Type.SUCCESS, link=customer_link(txn))
     notify_admins('New Ajo plan',
-                  f'{customer.full_name} joined {txn.product_name}: {each} ({txn.reference}).',
-                  Notification.Kind.PAYMENT, link=admin_link(txn))
+                  f'{customer.full_name} {"was signed up to" if by_staff else "joined"} {txn.product_name}'
+                  f'{" by " + actor.full_name if by_staff else ""}: {each} ({txn.reference}).',
+                  Notification.Kind.PAYMENT, link=admin_link(txn), exclude=actor if by_staff else None)
     return dates
 
 

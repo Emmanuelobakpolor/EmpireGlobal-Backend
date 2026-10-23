@@ -3,6 +3,9 @@ from decimal import Decimal
 
 from django.utils import timezone
 
+from accounts.models import User
+from core.models import AuditLog
+
 from .ajo import due_dates
 from .models import Contribution, Notification, Transaction, Withdrawal
 from .tests import BANK, PASSWORD, PaymentTestBase
@@ -91,6 +94,50 @@ class JoinTests(AjoTestBase):
         # No receipts from the customer
         self.assertEqual(self.upload(self.client_for(self.customer), txn.reference).json()['code'],
                          'ajo_recorded_by_staff')
+
+
+class StaffRegistrationTests(AjoTestBase):
+    PLAN = {'productId': AJO, 'amount': 2000, 'contributionFrequency': 'weekly', 'termMonths': 2, 'termsAccepted': True}
+
+    def register(self, user=None, **body):
+        data = {'fullName': 'Ngozi Eze', 'phone': '08030000000', **body}
+        return self.post(self.client_for(user or self.admin), '/api/admin/customers/', data)
+
+    def test_register_without_email_and_start_ajo(self):
+        res = self.register(ajo=self.PLAN)
+        self.assertEqual(res.status_code, 201, res.content)
+        customer, txn = res.json()['customer'], res.json()['transaction']
+        self.assertEqual((customer['email'], customer['hasEmail'], customer['status']), ('', False, 'active'))
+        self.assertEqual((txn['ajo']['state'], txn['ajo']['frequency'], txn['ajo']['contribution']), ('active', 'weekly', 2000.0))
+        user = User.objects.get(public_id=customer['id'])
+        # No way in: a placeholder address and no password
+        self.assertTrue(user.email.endswith('.invalid'))
+        self.assertFalse(user.has_usable_password())
+        self.assertTrue(AuditLog.objects.filter(action='Customer Registered', reference=user.public_id).exists())
+        self.assertTrue(AuditLog.objects.filter(action='Ajo Plan Started', actor=self.admin).exists())
+        # Staff carry on as usual
+        plan = Transaction.objects.get(reference=txn['reference'])
+        self.assertEqual(self.record(self.boss, plan, 1).json()['transaction']['ajo']['saved'], 2000.0)
+
+    def test_register_with_email_only(self):
+        res = self.register(email='Ngozi@Example.com')
+        self.assertEqual((res.json()['customer']['email'], res.json()['transaction']), ('ngozi@example.com', None))
+        self.assertIn('email', self.register(email='ngozi@example.com').json())
+
+    def test_validation_and_permissions(self):
+        self.assertIn('fullName', self.register(fullName='Ngozi').json())
+        res = self.register(ajo={**self.PLAN, 'amount': 10, 'termsAccepted': False})
+        self.assertEqual(set(res.json()['ajo']), {'amount', 'termsAccepted'})
+        # Nothing is saved when the plan is wrong
+        self.assertFalse(User.objects.filter(full_name='Ngozi Eze').exists())
+        self.assertEqual(self.register(ajo={**self.PLAN, 'productId': 'p2'}).status_code, 400)
+        self.assertEqual(self.register(user=self.customer).status_code, 403)
+
+    def test_start_ajo_for_an_existing_customer(self):
+        res = self.post(self.client_for(self.admin), f'/api/admin/customers/{self.customer.public_id}/ajo/', self.PLAN)
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertEqual(res.json()['transaction']['customerId'], self.customer.public_id)
+        self.assertTrue(Notification.objects.filter(recipient=self.customer, title='Ajo plan started').exists())
 
 
 class RecordTests(AjoTestBase):

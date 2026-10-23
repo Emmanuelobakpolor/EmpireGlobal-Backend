@@ -31,6 +31,18 @@ class AuthProvider(models.TextChoices):
 
 ID_PREFIXES = {Role.CUSTOMER: 'EMP', Role.ADMIN: 'ADM', Role.SUPER_ADMIN: 'ADM'}
 
+# Customers registered by staff without an email get a placeholder address here. `.invalid` can
+# never receive mail, and nobody can sign in with it: the account has no usable password.
+NO_EMAIL_DOMAIN = 'no-email.empireglobal.invalid'
+
+
+def placeholder_email():
+    return f'{uuid.uuid4().hex[:16]}@{NO_EMAIL_DOMAIN}'
+
+
+def is_placeholder_email(email):
+    return (email or '').lower().endswith(f'@{NO_EMAIL_DOMAIN}')
+
 
 def normalize_agent_code(code):
     return (code or '').strip().upper()
@@ -120,6 +132,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     @property
     def is_staff(self):
         return self.role == Role.SUPER_ADMIN
+
+    @property
+    def has_email(self):
+        return not is_placeholder_email(self.email)
 
     @property
     def is_admin(self):

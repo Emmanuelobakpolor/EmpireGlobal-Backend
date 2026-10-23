@@ -610,6 +610,41 @@ class AjoPayoutSerializer(serializers.Serializer):
     note = serializers.CharField(max_length=300, required=False, allow_blank=True, default='')
 
 
+class AjoPlanSerializer(serializers.Serializer):
+    """An Ajo plan staff set up for a customer."""
+
+    productId = serializers.CharField(max_length=32)
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=1)
+    contributionFrequency = serializers.CharField(max_length=16)
+    termMonths = serializers.IntegerField(min_value=1, max_value=120)
+    # Staff confirm the customer was told the terms and agreed
+    termsAccepted = serializers.BooleanField(default=False)
+
+    def validate_productId(self, code):
+        from catalog.models import Product
+
+        product = Product.objects.filter(code=code, type=ProductType.AJO, status=Product.Status.ACTIVE).first()
+        if not product:
+            raise serializers.ValidationError('Choose an available Ajo product.')
+        return product
+
+    def validate(self, attrs):
+        product, errors = attrs['productId'], {}
+        if not product.min_amount <= attrs['amount'] <= product.max_amount:
+            errors['amount'] = [f'Each contribution must be between {naira(product.min_amount)} and '
+                                f'{naira(product.max_amount)}.']
+        frequencies = ajo.contribution_frequencies(product)
+        if attrs['contributionFrequency'] not in frequencies:
+            errors['contributionFrequency'] = [f'Choose how often they will contribute: {", ".join(frequencies)}.']
+        if attrs['termMonths'] not in (product.term_options or []):
+            errors['termMonths'] = [f'Choose a cycle of {", ".join(map(str, product.term_options or []))} months.']
+        if product.clauses and not attrs['termsAccepted']:
+            errors['termsAccepted'] = ['Confirm the customer has agreed to the terms.']
+        if errors:
+            raise serializers.ValidationError(errors)
+        return attrs
+
+
 class RecordContributionSerializer(serializers.Serializer):
     """A contribution taken by staff: cash, or a transfer seen in the bank."""
 

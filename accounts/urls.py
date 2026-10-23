@@ -28,4 +28,5 @@ urlpatterns = [
     path('admin/admins/<str:public_id>/', admin_views.AdminDetailView.as_view()),
     path('admin/customers/', admin_views.CustomerListView.as_view()),
     path('admin/customers/<str:public_id>/', admin_views.CustomerDetailView.as_view()),
+    path('admin/customers/<str:public_id>/ajo/', admin_views.CustomerAjoView.as_view()),
 ]

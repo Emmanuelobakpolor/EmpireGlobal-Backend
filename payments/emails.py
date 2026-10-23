@@ -7,6 +7,8 @@ from django.conf import settings
 from django.core.mail import send_mail
 from django.db import transaction as db_transaction
 
+from accounts.models import is_placeholder_email
+
 logger = logging.getLogger(__name__)
 
 BALANCE_LABELS = {
@@ -28,6 +30,10 @@ def percent(rate):
 
 def _send_after_commit(subject, message, recipient):
     """Send once the database change is saved, and never let a mail problem undo it."""
+    if is_placeholder_email(recipient):
+        # Registered by staff without an email
+        return
+
     def send():
         try:
             send_mail(subject, message, None, [recipient])
