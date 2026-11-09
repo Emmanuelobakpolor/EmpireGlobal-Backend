@@ -72,7 +72,8 @@ Your Empire Global verification code is 042436.
 | `DJANGO_DEBUG` | `true` | Set `false` in production (also turns on secure cookies) |
 | `DJANGO_ALLOWED_HOSTS` | empty | Comma-separated |
 | `FRONTEND_URL` | `http://localhost:5173` | Used for reset links and CSRF trusted origin |
-| `DEFAULT_FROM_EMAIL` | `Empire Global <no-reply@empireglobal.com>` | Must be on a domain verified in Resend |
+| `FRONTEND_EXTRA_ORIGINS` | empty | Comma-separated other addresses of the same site (e.g. `https://empireglobalng.com,https://empire-global.vercel.app`), also trusted for CSRF |
+| `DEFAULT_FROM_EMAIL` | `Empire Global <no-reply@empireglobalng.com>` | Must be on a domain verified in Resend |
 | `EMAIL_PROVIDER` | `console` | `console` prints emails; `resend` sends them through Resend |
 | `RESEND_API_KEY` | empty | Required when `EMAIL_PROVIDER=resend` |
 | `GOOGLE_CLIENT_ID` | empty | OAuth client ID for Google sign-in (customers) |

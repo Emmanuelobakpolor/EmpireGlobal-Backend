@@ -32,9 +32,9 @@ SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'django-insecure-syr%)hkwa%6&(=
 DEBUG = os.environ.get('DJANGO_DEBUG', 'true').lower() == 'true'
 
 ALLOWED_HOSTS = [h.strip() for h in os.environ.get('DJANGO_ALLOWED_HOSTS', '').split(',') if h.strip()]
-# Render sets this to the service's own hostname (e.g. empireglobal-backend.onrender.com)
-if os.environ.get('RENDER_EXTERNAL_HOSTNAME'):
-    ALLOWED_HOSTS.append(os.environ['RENDER_EXTERNAL_HOSTNAME'])
+# Railway sets this to the service's public hostname (e.g. empireglobal-backend.up.railway.app)
+if os.environ.get('RAILWAY_PUBLIC_DOMAIN'):
+    ALLOWED_HOSTS.append(os.environ['RAILWAY_PUBLIC_DOMAIN'])
 
 
 # Application definition
@@ -196,7 +196,7 @@ else:
     }
 
 
-DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'Empire Global <no-reply@empireglobal.com>')
+DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'Empire Global <no-reply@empireglobalng.com>')
 
 
 # Auth / API
@@ -206,10 +206,15 @@ DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'Empire Global <no-rep
 # In production the React app is on Vercel, which forwards /api/* to this server (see vercel.json),
 # so the browser still sees one origin and the cookies stay first-party.
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:5173').rstrip('/')
-CSRF_TRUSTED_ORIGINS = [FRONTEND_URL]
+# Other addresses the same site is served from (e.g. the bare domain and the vercel.app URL),
+# comma-separated. FRONTEND_URL alone is used for links in emails.
+FRONTEND_EXTRA_ORIGINS = [
+    o.strip().rstrip('/') for o in os.environ.get('FRONTEND_EXTRA_ORIGINS', '').split(',') if o.strip()
+]
+CSRF_TRUSTED_ORIGINS = [FRONTEND_URL, *FRONTEND_EXTRA_ORIGINS]
 # The forwarded requests may carry the frontend's hostname
-if urlparse(FRONTEND_URL).hostname and not DEBUG:
-    ALLOWED_HOSTS.append(urlparse(FRONTEND_URL).hostname)
+if not DEBUG:
+    ALLOWED_HOSTS += [urlparse(o).hostname for o in CSRF_TRUSTED_ORIGINS if urlparse(o).hostname]
 
 SESSION_COOKIE_AGE = 60 * 60 * 24 * 7
 SESSION_COOKIE_SECURE = not DEBUG
