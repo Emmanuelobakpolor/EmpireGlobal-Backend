@@ -11,8 +11,8 @@ A product's `withdrawal_rules` (JSON) can hold:
   notice_working_days   int    Earliest payout is this many working days (Mon-Fri) after the request
   notice_hours          int    Or this many hours after the request
   payout                str    'any' (default), 'month_end' or 'quarter_end': when payouts happen
-Ajo plans ignore these: their savings are paid out in one go once the cycle ends, less the
-service charge (payments/ajo.py).
+Ajo plans ignore these: their savings can be withdrawn at any time, in part or in full, less the
+service charge still owed (payments/ajo.py).
 Interest is tracked for investments and savings plans (payments/investments.py). Before maturity,
 ending the plan forfeits all interest paid, and a partial withdrawal drops the plan to the partial
 rate on the capital left; either way interest already paid above what's now earned comes off the
@@ -67,7 +67,7 @@ class Quote:
     penalty: Decimal = Decimal('0')
     interest_deducted: Decimal = Decimal('0')
     interest_rate_after: Decimal | None = None  # A partial withdrawal before maturity lowers the rate
-    service_charge: Decimal = Decimal('0')       # Ajo: one contribution, taken off the payout
+    service_charge: Decimal = Decimal('0')       # Ajo: the charge still owed, taken off the payout
     payout_amount: Decimal = Decimal('0')
     earliest_payout_date: date | None = None
     reason: str = ''                 # Why the plan can't be withdrawn from right now
@@ -204,33 +204,40 @@ def quote(txn, amount=None, today=None, now=None, exclude=None):
 
 
 def _ajo_quote(txn, q, amount, today, exclude):
-    """An Ajo plan pays out everything saved, once, when the cycle ends, less one contribution."""
-    saved = ajo.saved(txn)
-    q.available = max(Decimal('0'), saved - withdrawn_from(txn, exclude)).quantize(CENT)
-    if not txn.contributions.exists():
-        q.reason = 'This Ajo plan starts once your first contribution is confirmed.'
+    """Ajo savings can be withdrawn at any time, in part or in full. Each withdrawal first settles
+    the service charge still owed: one contribution for each month saved in."""
+    p = ajo.position(txn, exclude=exclude)
+    q.available = p.available.quantize(CENT)
+    q.matured = ajo.has_ended(txn, today)
+    if p.saved <= 0:
+        q.reason = 'Nothing has been saved on this Ajo plan yet.'
         return q
-    if q.available <= 0:
-        q.reason = 'This Ajo plan has already been paid out or requested.'
+    if p.available <= 0:
+        q.reason = 'Everything saved on this Ajo plan has already been withdrawn or requested.'
         return q
-    if not ajo.has_ended(txn, today):
-        q.reason = f'Your Ajo savings are paid out when the cycle ends on {txn.end_date:%d %b %Y}.'
+    if p.net <= 0:
+        q.reason = f'What is saved so far only covers the service charge of {ajo.naira(p.charge_due)}.'
         return q
-    if txn.contributions.filter(status='pending').exists():
-        q.reason = 'A contribution is still being confirmed. You can request your payout once it has been.'
-        return q
-    q.allowed = True
-    q.matured = True
+    q.allowed = q.partial_allowed = True
     q.kind = 'full'
-    q.service_charge = ajo.service_charge(txn, saved)
+    q.service_charge = p.charge_due
     q.earliest_payout_date = today
-    q.notes.append(f'The service charge of one contribution ({ajo.naira(q.service_charge)}) is taken off your payout.')
+    if p.charge_due:
+        q.notes.append(f'The service charge of {ajo.naira(p.charge_due)} (one contribution for each month you '
+                       'have saved in) is taken off this withdrawal.')
     if amount is None:
-        q.payout_amount = q.available - q.service_charge
+        q.payout_amount = p.net
         return q
     amount = Decimal(amount).quantize(CENT)
-    if amount != q.available:
-        q.error = f'Ajo savings are paid out in full: ₦{q.available:,.2f}.'
+    if amount <= 0:
+        q.error = 'Enter an amount greater than zero.'
         return q
-    q.payout_amount = amount - q.service_charge
+    if amount > q.available:
+        q.error = f'You can withdraw at most ₦{q.available:,.2f} from this plan.'
+        return q
+    if amount <= p.charge_due:
+        q.error = f'Enter more than the service charge of {ajo.naira(p.charge_due)}, which is taken off first.'
+        return q
+    q.kind = 'full' if amount == q.available else 'partial'
+    q.payout_amount = amount - p.charge_due
     return q

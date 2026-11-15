@@ -420,7 +420,7 @@ class Withdrawal(models.Model):
     # Interest already paid that the plan no longer earns (ending it early, or a partial withdrawal
     # before maturity), taken off the payout
     interest_deducted = models.DecimalField(max_digits=14, decimal_places=2, default=0)
-    # Ajo: the collector's charge (one contribution per cycle), taken off the payout
+    # Ajo: the collector's charge still owed (one contribution for each month saved in), taken off the payout
     service_charge = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     payout_amount = models.DecimalField(max_digits=14, decimal_places=2)
     earliest_payout_date = models.DateField()

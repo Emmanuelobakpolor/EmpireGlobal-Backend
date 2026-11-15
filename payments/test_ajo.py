@@ -7,6 +7,7 @@ from accounts.models import User
 from core.models import AuditLog
 
 from .ajo import due_dates
+from .facilities import add_months
 from .models import Contribution, Notification, Transaction, Withdrawal
 from .tests import BANK, PASSWORD, PaymentTestBase
 
@@ -80,9 +81,12 @@ class ScheduleTests(AjoTestBase):
 class JoinTests(AjoTestBase):
     def test_joining_starts_the_cycle_with_nothing_to_pay_in_the_app(self):
         txn = self.join()
-        today = timezone.localdate()
-        self.assertEqual((txn.status, txn.start_date, txn.paid_to), ('approved', today, None))
-        self.assertEqual(txn.contributions.count(), (txn.end_date - today).days)
+        # The cycle is the calendar month they joined in
+        first = timezone.localdate().replace(day=1)
+        self.assertEqual((txn.status, txn.start_date, txn.end_date, txn.paid_to),
+                         ('approved', first, add_months(first, 1), None))
+        self.assertEqual(txn.contributions.count(), (txn.end_date - first).days)
+        self.assertEqual(self.contribution(txn, 1).due_date, first)
         self.assertFalse(txn.contributions.filter(status='paid').exists())
         data = self.view(txn)
         self.assertEqual((data['ajo']['state'], data['ajo']['saved'], data['ajo']['paidCount']), ('active', 0.0, 0))
@@ -188,50 +192,130 @@ class RecordTests(AjoTestBase):
         self.assertEqual(self.record(self.admin, txn, 2).json()['code'], 'cycle_ended')
 
 
-class PayoutTests(AjoTestBase):
-    def test_customers_cannot_withdraw_or_see_ajo_as_withdrawable(self):
-        txn = self.join()
-        self.record(self.boss, txn, 1)
-        self.end_cycle(txn)
-        plans = self.client_for(self.customer).get('/api/withdrawals/plans/').json()['plans']
-        self.assertNotIn(txn.reference, [p['reference'] for p in plans])
-        res = self.post(self.client_for(self.customer), '/api/withdrawals/', {
-            'planReference': txn.reference, 'amount': 5000, 'password': PASSWORD, **PAYOUT_ACCOUNT})
-        self.assertEqual(res.json()['code'], 'ajo_paid_by_staff')
+class WithdrawalTests(AjoTestBase):
+    def request(self, txn, amount, **body):
+        return self.post(self.client_for(self.customer), '/api/withdrawals/', {
+            'planReference': txn.reference, 'amount': amount, 'password': PASSWORD, **PAYOUT_ACCOUNT, **body})
 
-    def test_no_payout_before_the_cycle_ends(self):
+    def plan(self, txn):
+        plans = self.client_for(self.customer).get('/api/withdrawals/plans/').json()['plans']
+        return next(p for p in plans if p['reference'] == txn.reference)
+
+    def second_month(self, txn):
+        """The number of the first contribution of the cycle's second month."""
+        return txn.contributions.filter(due_date__gte=add_months(txn.start_date, 1)).first().number
+
+    def test_customer_withdraws_part_of_their_savings_during_the_cycle(self):
+        txn = self.join()
+        for number in (1, 2, 3):
+            self.record(self.boss, txn, number)
+        plan = self.plan(txn)
+        self.assertEqual((plan['allowed'], plan['partialAllowed'], plan['available'], plan['serviceCharge'],
+                          plan['payoutAmount']), (True, True, 15000.0, 5000.0, 10000.0))
+        # The charge comes off first, so the amount has to be more than it
+        self.assertIn('amount', self.request(txn, 5000).json()['errors'])
+        self.assertIn('amount', self.request(txn, 15001).json()['errors'])
+
+        res = self.request(txn, 8000)
+        self.assertEqual(res.status_code, 201, res.content)
+        wd = res.json()['withdrawal']
+        self.assertEqual((wd['kind'], wd['amount'], wd['serviceCharge'], wd['payoutAmount']),
+                         ('partial', 8000.0, 5000.0, 3000.0))
+        # The amount asked for is held aside, and the month's charge isn't taken twice
+        plan = self.plan(txn)
+        self.assertEqual((plan['available'], plan['serviceCharge'], plan['payoutAmount']), (7000.0, 0.0, 7000.0))
+
+        self.post(self.client_for(self.boss), f'/api/admin/withdrawals/{wd["reference"]}/approve/')
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.ajo_balance, Decimal('7000'))
+        data = self.view(txn)['ajo']
+        # Still saving, with the withdrawal on the statement
+        self.assertEqual((data['state'], data['balance'], data['available'], data['netPayout']),
+                         ('active', 7000.0, 7000.0, 7000.0))
+        self.assertEqual([(r['credit'], r['debit']) for r in data['statement']],
+                         [(5000.0, 0), (5000.0, 0), (5000.0, 0), (0, 5000.0), (0, 3000.0)])
+        self.assertEqual(self.record(self.boss, txn, 4).json()['transaction']['ajo']['balance'], 12000.0)
+
+    def test_a_pending_request_can_be_cancelled(self):
         txn = self.join()
         self.record(self.boss, txn, 1)
-        res = self.arrange(txn)
-        self.assertEqual(res.json()['code'], 'not_payable')
-        self.assertIn('cycle ends', res.json()['detail'])
+        self.record(self.boss, txn, 2)
+        wd = self.request(txn, 10000).json()['withdrawal']
+        self.assertEqual((wd['kind'], wd['payoutAmount']), ('full', 5000.0))
+        self.assertFalse(self.plan(txn)['allowed'])
+        res = self.post(self.client_for(self.customer), f'/api/withdrawals/{wd["reference"]}/cancel/')
+        self.assertEqual(res.json()['withdrawal']['status'], 'cancelled')
+        self.assertEqual(self.plan(txn)['available'], 10000.0)
+
+    def test_one_contribution_is_charged_for_each_month_saved_in(self):
+        txn = self.join(term=3)
+        later = self.second_month(txn)
+        for number in (1, 2, later, later + 1):
+            self.record(self.boss, txn, number)
+        # Two months saved in, none in the third
+        data = self.view(txn)['ajo']
+        self.assertEqual((data['saved'], data['serviceCharge'], data['netPayout']), (20000.0, 10000.0, 10000.0))
+        self.end_cycle(txn)
+        payout = self.arrange(txn).json()['transaction']['ajo']['payout']
+        self.assertEqual((payout['amount'], payout['serviceCharge'], payout['payoutAmount']),
+                         (20000.0, 10000.0, 10000.0))
+
+    def test_a_later_month_is_charged_on_the_next_withdrawal(self):
+        txn = self.join(term=2)
+        self.record(self.boss, txn, 1)
+        self.record(self.boss, txn, 2)
+        wd = self.request(txn, 10000).json()['withdrawal']
+        self.post(self.client_for(self.boss), f'/api/admin/withdrawals/{wd["reference"]}/approve/')
+        later = self.second_month(txn)
+        self.record(self.boss, txn, later)
+        self.record(self.boss, txn, later + 1)
+        plan = self.plan(txn)
+        self.assertEqual((plan['available'], plan['serviceCharge'], plan['payoutAmount']), (10000.0, 5000.0, 5000.0))
+
+    def test_nothing_to_withdraw_until_more_than_the_charge_is_saved(self):
+        txn = self.join()
+        self.assertFalse(self.plan(txn)['allowed'])
+        self.record(self.boss, txn, 1)
+        plan = self.plan(txn)
+        self.assertEqual(plan['allowed'], False)
+        self.assertIn('service charge', plan['reason'])
+        self.assertEqual(self.request(txn, 5000).json()['code'], 'not_withdrawable')
+
+
+class PayoutTests(AjoTestBase):
+    def test_staff_arrange_a_withdrawal_during_the_cycle(self):
+        txn = self.join()
+        for number in (1, 2, 3):
+            self.record(self.boss, txn, number)
+        self.assertIn('amount', self.arrange(txn, amount=20000).json()['errors'])
+        res = self.arrange(txn, amount=9000)
+        self.assertEqual(res.status_code, 200, res.content)
+        ajo = res.json()['transaction']['ajo']
+        self.assertEqual((ajo['state'], ajo['payout']['payoutAmount'], ajo['available']), ('active', 4000.0, 6000.0))
+        self.assertTrue(AuditLog.objects.filter(action='Ajo Withdrawal Arranged', actor=self.admin).exists())
 
     def test_admin_arranges_the_payout_less_one_contribution(self):
         txn = self.join()
         self.record(self.boss, txn, 1)
         self.record(self.boss, txn, 2)
-        # A contribution still waiting for confirmation holds the payout back
         self.record(self.admin, txn, 3)
-        self.end_cycle(txn)
-        self.assertEqual(self.arrange(txn).json()['code'], 'not_payable')
         self.act(self.boss, self.contribution(txn, 3), 'approve')
+        self.end_cycle(txn)
         self.assertEqual(self.arrange(txn, accountNumber='123').status_code, 400)
 
         res = self.arrange(txn)
         self.assertEqual(res.status_code, 200, res.content)
         payout = res.json()['transaction']['ajo']['payout']
         self.assertEqual((payout['amount'], payout['serviceCharge'], payout['payoutAmount']), (15000.0, 5000.0, 10000.0))
-        self.assertTrue(Notification.objects.filter(recipient=self.customer, title='Ajo payout on its way').exists())
-        # The customer sees it, but can't cancel it
+        self.assertTrue(Notification.objects.filter(recipient=self.customer, title='Ajo withdrawal on its way').exists())
         wd = Withdrawal.objects.get(reference=payout['reference'])
-        res = self.post(self.client_for(self.customer), f'/api/withdrawals/{wd.reference}/cancel/')
-        self.assertEqual(res.json()['code'], 'not_cancellable')
         self.assertEqual(self.arrange(txn).json()['code'], 'not_payable')
 
         res = self.post(self.client_for(self.boss), f'/api/admin/withdrawals/{wd.reference}/approve/')
         self.assertEqual(res.status_code, 200, res.content)
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.ajo_balance, 0)
+        self.assertEqual(self.view(txn)['ajo']['state'], 'payout_requested')
         self.post(self.client_for(self.admin), f'/api/admin/withdrawals/{wd.reference}/mark-paid/',
                   {'payoutReference': 'TRF-OUT-1'})
 
@@ -249,3 +333,4 @@ class PayoutTests(AjoTestBase):
         self.end_cycle(txn)
         self.assertEqual(self.arrange(txn).json()['code'], 'not_payable')
         self.assertEqual(Contribution.objects.filter(plan=txn, status='paid').count(), 0)
+        self.assertEqual(self.view(txn)['ajo']['state'], 'ended')

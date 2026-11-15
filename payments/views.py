@@ -16,7 +16,7 @@ from accounts.views import CsrfAPIView, error
 from core import audit
 from core.models import AuditLog
 
-from . import ajo, facilities, investments, services
+from . import ajo, amendments, facilities, investments, services
 from .files import serve_private_file
 from .models import (
     FACILITY_TYPES,
@@ -34,8 +34,10 @@ from .notify import customer_link, notify, notify_admins, payment_review_link
 from .serializers import (
     FACILITIES,
     AdminTransactionSerializer,
+    AmountSerializer,
     ApproveSerializer,
     AssignmentSerializer,
+    ContractDateSerializer,
     DisburseSerializer,
     InterestPaymentListSerializer,
     InterestRateSerializer,
@@ -53,9 +55,9 @@ from .serializers import (
 )
 
 ADMIN_QUERYSET = Transaction.objects.select_related('customer').prefetch_related(
-    'slip_events', 'documents', 'repayments__events', 'interest_payments', 'contributions__events')
+    'slip_events', 'documents', 'repayments__events', 'interest_payments', 'contributions__events', 'withdrawals')
 CUSTOMER_QUERYSET = Transaction.objects.select_related('customer').prefetch_related(
-    'documents', 'repayments', 'interest_payments', 'contributions')
+    'documents', 'repayments', 'interest_payments', 'contributions', 'withdrawals')
 
 
 class IsCustomer(IsAuthenticated):
@@ -343,6 +345,43 @@ class DisburseView(AdminTransactionView):
         return self.respond(reference)
 
 
+# ---- Corrections to a running contract ----
+
+def amend_error(exc):
+    extra = {'errors': {exc.field: [exc.message]}} if exc.field else {}
+    return error(exc.message, exc.code, **extra)
+
+
+class ContractDateView(AdminTransactionView):
+    """A Super Admin sets the day a contract really started; its schedule moves with it."""
+    permission_classes = [IsSuperAdmin]
+
+    def post(self, request, reference):
+        serializer = ContractDateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        try:
+            amendments.change_start_date(self.get_txn(reference), request.user, data['startDate'], data['note'])
+        except amendments.AmendError as exc:
+            return amend_error(exc)
+        return self.respond(reference)
+
+
+class AmountView(AdminTransactionView):
+    """A Super Admin sets what was actually paid on a savings plan or investment."""
+    permission_classes = [IsSuperAdmin]
+
+    def post(self, request, reference):
+        serializer = AmountSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        try:
+            amendments.change_amount(self.get_txn(reference), request.user, data['amount'], data['note'])
+        except amendments.AmendError as exc:
+            return amend_error(exc)
+        return self.respond(reference)
+
+
 # ---- Investment interest ----
 
 def investment_error(exc):
@@ -417,14 +456,19 @@ class AdminRepaymentActionView(CsrfAPIView):
     action_name = ''
 
     def get_permissions(self):
-        if self.action_name in ('approve', 'reject'):
+        if self.action_name in ('approve', 'reject', 'amount'):
             return [IsSuperAdmin()]
         return super().get_permissions()
 
     def post(self, request, pk):
         rep = get_object_or_404(Repayment, pk=pk)
         try:
-            if self.action_name == 'recommend':
+            if self.action_name == 'amount':
+                serializer = AmountSerializer(data=request.data)
+                serializer.is_valid(raise_exception=True)
+                amendments.change_repayment_amount(rep, request.user, serializer.validated_data['amount'],
+                                                   serializer.validated_data['note'])
+            elif self.action_name == 'recommend':
                 serializer = RecommendSerializer(data=request.data)
                 serializer.is_valid(raise_exception=True)
                 facilities.recommend_repayment(rep, request.user, serializer.validated_data['decision'] == 'approve',
@@ -434,7 +478,7 @@ class AdminRepaymentActionView(CsrfAPIView):
                 serializer.is_valid(raise_exception=True)
                 action = facilities.approve_repayment if self.action_name == 'approve' else facilities.reject_repayment
                 action(rep, request.user, serializer.validated_data['note'])
-        except facilities.FacilityError as exc:
+        except (facilities.FacilityError, amendments.AmendError) as exc:
             return facility_error(exc)
         txn = get_object_or_404(ADMIN_QUERYSET, pk=rep.facility_id)
         return Response({'transaction': AdminTransactionSerializer(txn).data})
@@ -484,7 +528,7 @@ class AdminContributionActionView(CsrfAPIView):
 
 
 class AjoPayoutView(AdminTransactionView):
-    """Any admin arranges an Ajo plan's payout once its cycle has ended."""
+    """Any admin arranges a withdrawal from an Ajo plan for its customer."""
 
     def post(self, request, reference):
         serializer = AjoPayoutSerializer(data=request.data)
@@ -492,7 +536,7 @@ class AjoPayoutView(AdminTransactionView):
         data = serializer.validated_data
         try:
             ajo.arrange_payout(request.user, self.get_txn(reference), data['bankName'], data['accountNumber'],
-                               data['accountName'], data['note'])
+                               data['accountName'], data['note'], data.get('amount'))
         except ajo.AjoError as exc:
             return ajo_error(exc)
         return self.respond(reference)
@@ -624,9 +668,7 @@ class WithdrawablePlansView(CsrfAPIView):
     permission_classes = [IsCustomer]
 
     def get(self, request):
-        # Ajo payouts are arranged by staff
-        plans = Transaction.objects.filter(customer=request.user, status=Transaction.Status.APPROVED).exclude(
-            product_type='ajo')
+        plans = Transaction.objects.filter(customer=request.user, status=Transaction.Status.APPROVED)
         return Response({'plans': [
             {'reference': p.reference, 'productName': p.product_name, 'productType': p.product_type,
              'amount': money(p.amount), 'startDate': p.start_date, 'endDate': p.end_date,

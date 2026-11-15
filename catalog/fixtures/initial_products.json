@@ -309,7 +309,7 @@
     "name": "Ajo Esusu Contribution",
     "category": "Thrift Savings",
     "type": "ajo",
-    "description": "Contribute a fixed amount every day or week for a cycle and collect everything you saved at the end, less a service charge of one contribution.",
+    "description": "Contribute a fixed amount every day or week for a cycle and collect what you saved, less a service charge of one contribution a month.",
     "minAmount": 500,
     "maxAmount": 1000000,
     "duration": "1 - 3 months",
@@ -328,9 +328,9 @@
     ],
     "clauses": [
       "The contribution amount and how often you contribute are fixed for the whole cycle.",
-      "A service charge of one contribution is taken from your savings at the end of each cycle.",
-      "Your savings are paid out in one sum when the cycle ends, after a payout request is approved.",
-      "Savings cannot be withdrawn before the cycle ends.",
+      "A service charge of one contribution is taken from your savings for each month you save in.",
+      "You can request a withdrawal of part or all of your savings at any time; it is paid once approved.",
+      "Each cycle runs on calendar months, from the 1st of the month you join in.",
       "Missed contributions are not carried over; you are paid what you actually saved, less the service charge.",
       "Cash contributions are only valid when recorded by Empire Global staff."
     ],

@@ -61,7 +61,7 @@ class TransactionSerializer(serializers.ModelSerializer):
     facility = serializers.SerializerMethodField()
     # Investments: how interest is paid, where to, and its schedule
     investment = serializers.SerializerMethodField()
-    # Ajo: the contributions, what's saved, the charge and the statement
+    # Ajo: the contributions, what's saved, the charge, withdrawals and the statement
     ajo = serializers.SerializerMethodField()
 
     class Meta:
@@ -206,8 +206,9 @@ class TransactionSerializer(serializers.ModelSerializer):
         return self.format_steps(steps)
 
     def ajo_timeline(self, txn):
-        payout = txn.withdrawals.exclude(status__in=('rejected', 'cancelled')).order_by('-created_at').first()
         ended = ajo.has_ended(txn)
+        # Withdrawals made along the way aren't the cycle's payout
+        payout = (ajo.active_withdrawals(txn) or [None])[-1] if ended else None
         return self.format_steps([
             {'label': 'Joined', 'done': True, 'date': txn.created_at},
             {'label': 'Saving', 'done': ended, 'current': not ended},
@@ -442,6 +443,18 @@ class DisburseSerializer(serializers.Serializer):
     reference = serializers.CharField(max_length=100)
 
 
+class ContractDateSerializer(ReviewSerializer):
+    """A Super Admin's correction to the day a contract started."""
+
+    startDate = serializers.DateField()
+
+
+class AmountSerializer(ReviewSerializer):
+    """A Super Admin's correction to what was paid: on a plan, or on one instalment."""
+
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0.01'))
+
+
 class InterestPaymentListSerializer(serializers.Serializer):
     """An investment's interest payment, in the admin list of payments to send."""
 
@@ -602,8 +615,11 @@ class PayoutSerializer(serializers.Serializer):
 
 
 class AjoPayoutSerializer(serializers.Serializer):
-    """The customer's own account the payout goes to."""
+    """A withdrawal staff arrange for the customer: how much (everything available when left out)
+    and the customer's own account it goes to."""
 
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0.01'), required=False,
+                                      allow_null=True)
     bankName = serializers.CharField(max_length=100)
     accountNumber = serializers.RegexField(r'^\d{10}$', error_messages={'invalid': 'Enter the 10-digit NUBAN account number.'})
     accountName = serializers.CharField(max_length=150)

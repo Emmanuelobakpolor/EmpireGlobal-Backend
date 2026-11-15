@@ -142,19 +142,27 @@ def add_months(start, months):
     return date(year, month, min(start.day, monthrange(year, month)[1]))
 
 
+def instalment_date(start, term_months, frequency, number):
+    """When instalment `number` of a facility that started on `start` falls due."""
+    if frequency == RepaymentFrequency.ONCE:
+        return add_months(start, term_months or 1)
+    if frequency == RepaymentFrequency.MONTHLY:
+        return add_months(start, number)
+    return start + timedelta(days=(1 if frequency == RepaymentFrequency.DAILY else 7) * number)
+
+
 def schedule(total, term_months, frequency, start):
     """[(due date, amount)] splitting `total` evenly; the last instalment takes any rounding."""
     term_months = term_months or 1
-    end = add_months(start, term_months)
     if frequency == RepaymentFrequency.ONCE:
-        dates = [end]
+        count = 1
     elif frequency == RepaymentFrequency.MONTHLY:
-        dates = [add_months(start, i) for i in range(1, term_months + 1)]
+        count = term_months
     else:
         step = 1 if frequency == RepaymentFrequency.DAILY else 7
-        count = max(1, math.ceil((end - start).days / step))
-        dates = [start + timedelta(days=step * i) for i in range(1, count + 1)]
-    return list(zip(dates, split(total, len(dates))))
+        count = max(1, math.ceil((add_months(start, term_months) - start).days / step))
+    dates = [instalment_date(start, term_months, frequency, i) for i in range(1, count + 1)]
+    return list(zip(dates, split(total, count)))
 
 
 def collection_account(txn):
@@ -445,7 +453,6 @@ def approve_repayment(rep, super_admin, note=''):
         _repayment_event(rep, super_admin, 'approved', note)
 
         outstanding = txn.total_repayable - amount_paid(txn)
-        completed = not txn.repayments.exclude(status=Repayment.Status.PAID).exists()
         _audit(super_admin, txn, 'Repayment Approved', 'success',
                f'Confirmed instalment {rep.number} of {txn.product_name} ({naira(rep.amount)}) for '
                f'{txn.customer.full_name}. Outstanding: {naira(outstanding)}.', reference=rep.reference)
@@ -453,17 +460,24 @@ def approve_repayment(rep, super_admin, note=''):
                f'Your repayment of {naira(rep.amount)} for {txn.product_name} (instalment {rep.number}) was confirmed. '
                f'Outstanding: {naira(outstanding)}.',
                Notification.Kind.PAYMENT, Notification.Type.SUCCESS, link=customer_link(txn))
-        if completed:
-            txn.facility_status = FacilityStatus.COMPLETED
-            txn.save(update_fields=['facility_status'])
-            _audit(super_admin, txn, 'Facility Fully Repaid', 'success',
-                   f'{txn.customer.full_name} has fully repaid {txn.product_name} ({naira(txn.total_repayable)}).')
-            notify(txn.customer, 'Fully repaid',
-                   f'You have fully repaid {txn.product_name} ({txn.reference}).'
-                   + (' Ownership of the item is now yours.' if txn.product_type == ProductType.HIRE_PURCHASE else ''),
-                   Notification.Kind.PAYMENT, Notification.Type.SUCCESS, link=customer_link(txn))
+        completed = complete_if_repaid(txn, super_admin)
         emails.send_repayment_confirmed(rep, outstanding, completed)
     return rep
+
+
+def complete_if_repaid(txn, actor):
+    """A locked facility with every instalment confirmed is complete. Returns whether it now is."""
+    if txn.repayments.exclude(status=Repayment.Status.PAID).exists():
+        return False
+    txn.facility_status = FacilityStatus.COMPLETED
+    txn.save(update_fields=['facility_status'])
+    _audit(actor, txn, 'Facility Fully Repaid', 'success',
+           f'{txn.customer.full_name} has fully repaid {txn.product_name} ({naira(txn.total_repayable)}).')
+    notify(txn.customer, 'Fully repaid',
+           f'You have fully repaid {txn.product_name} ({txn.reference}).'
+           + (' Ownership of the item is now yours.' if txn.product_type == ProductType.HIRE_PURCHASE else ''),
+           Notification.Kind.PAYMENT, Notification.Type.SUCCESS, link=customer_link(txn))
+    return True
 
 
 def reject_repayment(rep, super_admin, reason=''):

@@ -53,9 +53,6 @@ def request_withdrawal(customer, plan_reference, amount, bank_name, account_numb
         plan = Transaction.objects.select_for_update().filter(reference=plan_reference, customer=customer).first()
         if not plan:
             raise WithdrawalError('Plan not found.', 'plan_not_found', 'planReference')
-        if plan.product_type == 'ajo':
-            raise WithdrawalError('Ajo payouts are arranged by our staff when your cycle ends.', 'ajo_paid_by_staff',
-                                  'planReference')
         q = quote(plan, amount)
         if not q.allowed:
             raise WithdrawalError(q.reason, 'not_withdrawable', 'planReference')
@@ -86,8 +83,6 @@ def cancel(customer, wd):
             raise WithdrawalError('Withdrawal not found.', 'not_found')
         if wd.status != Withdrawal.Status.PENDING:
             raise WithdrawalError('Only a withdrawal that is still being reviewed can be cancelled.', 'not_cancellable')
-        if wd.plan.product_type == 'ajo':
-            raise WithdrawalError('Ajo payouts are arranged by our staff and can\'t be cancelled here.', 'not_cancellable')
         wd.status = Withdrawal.Status.CANCELLED
         wd.decided_at = timezone.now()
         wd.save(update_fields=['status', 'decided_at'])

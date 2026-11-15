@@ -1,17 +1,19 @@
 """Ajo (Esusu): the customer pays a fixed contribution every day or week for a cycle (1 month or
-more) and gets everything saved back at the end, less the collector's charge of one contribution.
+more) and gets what they saved back, less the collector's charge of one contribution for each
+month they saved in.
 
-The customer only watches: staff do everything else.
-
-1. The customer joins (the contribution, how often and the cycle length) and the cycle starts that
-   day, with every contribution scheduled to the end date. Nothing is paid in the app.
+1. The customer joins (the contribution, how often and the cycle length). Cycles run on calendar
+   months: the cycle starts on the 1st of the month they join in, with every contribution
+   scheduled to the end date. Nothing is paid in the app.
 2. Staff record each contribution (cash, or a transfer seen in the bank). An Admin's record waits
    for a Super Admin's confirmation; a Super Admin's is confirmed at once. Confirmation credits the
    customer's Ajo balance.
-3. When the cycle ends, an admin arranges the payout: a withdrawal of everything saved, less the
-   charge (withdrawal_rules.quote), which is then approved and marked paid like any other.
+3. The customer can ask to withdraw part or all of what's saved at any time (staff can arrange it
+   for a customer without the app). Each withdrawal first settles the charge still owed
+   (withdrawal_rules.quote), and is then approved and marked paid like any other.
 """
 
+from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
 
@@ -36,6 +38,8 @@ from .models import (
 from .notify import customer_link, notify, notify_admins
 
 FREQUENCIES = (RepaymentFrequency.DAILY, RepaymentFrequency.WEEKLY, RepaymentFrequency.MONTHLY)
+# Withdrawals that still hold money aside on the plan
+ACTIVE_WITHDRAWALS = (Withdrawal.Status.PENDING, Withdrawal.Status.APPROVED, Withdrawal.Status.PAID)
 ROLE_LABELS = {Role.SUPER_ADMIN: 'Super Admin', Role.ADMIN: 'Admin'}
 
 
@@ -78,15 +82,58 @@ def due_dates(start, term_months, frequency):
     return dates
 
 
-def saved(txn):
+def cycle_start(day):
+    """Cycles run on calendar months: the 1st of the month `day` falls in."""
+    return day.replace(day=1)
+
+
+def month_of_cycle(txn, day):
+    """Which month of the cycle `day` falls in: 0 for the first."""
+    start = txn.start_date
+    months = (day.year - start.year) * 12 + day.month - start.month - (1 if day.day < start.day else 0)
+    return max(0, months)
+
+
+def saved(txn, contributions=None):
     """What the customer has paid in: every confirmed contribution."""
-    return sum((c.amount for c in txn.contributions.all() if c.status == Contribution.Status.PAID), Decimal(0))
+    contributions = txn.contributions.all() if contributions is None else contributions
+    return sum((c.amount for c in contributions if c.status == Contribution.Status.PAID), Decimal(0))
 
 
-def service_charge(txn, total=None):
-    """The collector's charge: one contribution per cycle (never more than was saved)."""
-    total = saved(txn) if total is None else total
-    return min(txn.amount, total)
+def service_charge(txn, contributions=None):
+    """The collector's charge so far: one contribution for each month of the cycle the customer
+    has saved in (never more than was saved)."""
+    contributions = list(txn.contributions.all()) if contributions is None else contributions
+    months = {month_of_cycle(txn, c.due_date) for c in contributions if c.status == Contribution.Status.PAID}
+    return min(txn.amount * len(months), saved(txn, contributions))
+
+
+@dataclass
+class Position:
+    """Where a plan's money stands."""
+
+    saved: Decimal        # Every confirmed contribution
+    charge: Decimal       # The service charge so far
+    charge_due: Decimal   # The part of it no withdrawal has settled yet
+    withdrawn: Decimal    # Taken out or asked for (charges included)
+    balance: Decimal      # Saved, less approved withdrawals: the plan's share of the Ajo balance
+    available: Decimal    # Saved, less every withdrawal in progress
+    net: Decimal          # What a withdrawal of everything available would pay
+
+
+def position(txn, contributions=None, exclude=None):
+    """The plan's savings, charge and withdrawals; `exclude` leaves one withdrawal out of the sums."""
+    contributions = list(txn.contributions.all()) if contributions is None else contributions
+    total = saved(txn, contributions)
+    active = [w for w in txn.withdrawals.all()
+              if w.status in ACTIVE_WITHDRAWALS and (exclude is None or w.pk != exclude.pk)]
+    withdrawn = sum((w.amount for w in active), Decimal(0))
+    deducted = sum((w.amount for w in active if w.status != Withdrawal.Status.PENDING), Decimal(0))
+    charge = service_charge(txn, contributions)
+    available = max(Decimal(0), total - withdrawn)
+    due = min(available, max(Decimal(0), charge - sum((w.service_charge for w in active), Decimal(0))))
+    return Position(saved=total, charge=charge, charge_due=due, withdrawn=withdrawn, balance=total - deducted,
+                    available=available, net=available - due)
 
 
 def has_ended(txn, today=None):
@@ -111,10 +158,10 @@ def contribution_state(c, today=None):
 def join(customer, product, amount, term_months, frequency, actor):
     """Start an Ajo plan for `customer`: by the customer in the app, or by staff (`actor`)."""
     now = timezone.now()
-    today = timezone.localdate()
+    first = cycle_start(timezone.localdate())
     txn = Transaction.objects.create(
         customer=customer, product_id=product.code, product_name=product.name, product_type=product.type,
-        amount=amount, term_months=term_months, start_date=today, end_date=add_months(today, term_months),
+        amount=amount, term_months=term_months, start_date=first, end_date=add_months(first, term_months),
         terms_accepted_at=now if product.clauses else None, repayment_frequency=frequency, created_at=now,
     )
     start(txn, actor)
@@ -122,23 +169,22 @@ def join(customer, product, amount, term_months, frequency, actor):
 
 
 def start(txn, actor):
-    """The plan has just been made: the cycle starts today with every contribution scheduled."""
+    """The plan has just been made: schedule every contribution of its cycle."""
     customer = txn.customer
     by_staff = actor.pk != customer.pk
-    today = timezone.localdate()
-    dates = due_dates(today, txn.term_months, txn.repayment_frequency)
+    first = txn.start_date
+    dates = due_dates(first, txn.term_months, txn.repayment_frequency)
     Contribution.objects.bulk_create([
         Contribution(plan=txn, number=i, due_date=due, amount=txn.amount) for i, due in enumerate(dates, start=1)
     ])
     txn.status = Transaction.Status.APPROVED
     txn.decided_at = timezone.now()
-    txn.start_date = today
-    txn.end_date = add_months(today, txn.term_months or 1)
-    txn.save(update_fields=['status', 'decided_at', 'start_date', 'end_date'])
+    txn.end_date = add_months(first, txn.term_months or 1)
+    txn.save(update_fields=['status', 'decided_at', 'end_date'])
     each = f'{len(dates)} {txn.repayment_frequency} contributions of {naira(txn.amount)}'
     who = f"Started {customer.full_name}'s" if by_staff else f'{customer.full_name} joined'
     audit.record(actor, 'Ajo Plan Started' if by_staff else 'Ajo Plan Joined',
-                 f'{who} {txn.product_name}, running {today:%d %b %Y} to {txn.end_date:%d %b %Y}: {each}.',
+                 f'{who} {txn.product_name}, running {first:%d %b %Y} to {txn.end_date:%d %b %Y}: {each}.',
                  reference=txn.reference, status='success', agent_code=customer.agent_code)
     notify(customer, 'Ajo plan started',
            f'Your {txn.product_name} ({txn.reference}) has started: {each}, ending {txn.end_date:%d %b %Y}. '
@@ -149,6 +195,31 @@ def start(txn, actor):
                   f'{" by " + actor.full_name if by_staff else ""}: {each} ({txn.reference}).',
                   Notification.Kind.PAYMENT, link=admin_link(txn), exclude=actor if by_staff else None)
     return dates
+
+
+def reschedule(txn, first):
+    """Move a locked plan's cycle to the month `first` falls in. Contributions keep their numbers
+    (and what was recorded against them) and take the new cycle's dates."""
+    first = cycle_start(first)
+    dates = due_dates(first, txn.term_months, txn.repayment_frequency)
+    rows = list(txn.contributions.select_for_update())
+    extra = [c for c in rows if c.number > len(dates)]
+    if any(c.status != Contribution.Status.SCHEDULED for c in extra):
+        raise AjoError(f'A cycle starting {first:%d %b %Y} has {len(dates)} contributions, but more than that '
+                       'have already been recorded on this plan.', 'too_many_recorded', 'startDate')
+    Contribution.objects.filter(pk__in=[c.pk for c in extra]).delete()
+    kept = [c for c in rows if c.number <= len(dates)]
+    for c in kept:
+        c.due_date = dates[c.number - 1]
+    Contribution.objects.bulk_update(kept, ['due_date'])
+    numbers = {c.number for c in kept}
+    Contribution.objects.bulk_create([
+        Contribution(plan=txn, number=i, due_date=due, amount=txn.amount)
+        for i, due in enumerate(dates, start=1) if i not in numbers
+    ])
+    txn.start_date = first
+    txn.end_date = add_months(first, txn.term_months or 1)
+    txn.save(update_fields=['start_date', 'end_date'])
 
 
 # ---- Recording a contribution ----
@@ -281,11 +352,11 @@ def reject(super_admin, c, reason=''):
     return c
 
 
-# ---- Payout ----
+# ---- Withdrawals ----
 
-def arrange_payout(admin, txn, bank_name, account_number, account_name, note=''):
-    """An admin starts the payout once the cycle has ended: a withdrawal of everything saved, less
-    the charge, which then goes through approval and payment like any other."""
+def arrange_payout(admin, txn, bank_name, account_number, account_name, note='', amount=None):
+    """An admin starts a withdrawal for the customer (e.g. one without the app): `amount` of what's
+    saved, or everything. It then goes through approval and payment like any other."""
     from .withdrawal_rules import quote
 
     with db_transaction.atomic():
@@ -295,26 +366,34 @@ def arrange_payout(admin, txn, bank_name, account_number, account_name, note='')
         q = quote(txn)
         if not q.allowed:
             raise AjoError(q.reason, 'not_payable')
+        if amount is not None:
+            q = quote(txn, amount)
+            if q.error:
+                raise AjoError(q.error, 'invalid_amount', 'amount')
+        taken = q.payout_amount + q.service_charge
         wd = Withdrawal.objects.create(
-            customer=txn.customer, plan=txn, kind=Withdrawal.Kind.FULL, amount=q.available, penalty=0,
-            service_charge=q.service_charge, payout_amount=q.available - q.service_charge,
+            customer=txn.customer, plan=txn, kind=q.kind, amount=taken, penalty=0,
+            service_charge=q.service_charge, payout_amount=q.payout_amount,
             earliest_payout_date=q.earliest_payout_date, bank_name=bank_name.strip(), account_number=account_number,
             account_name=account_name.strip(), note=note.strip()[:300],
         )
         WithdrawalEvent.objects.create(withdrawal=wd, action='requested', actor=admin, actor_name=admin.full_name,
                                        actor_role=ROLE_LABELS.get(admin.role, admin.role))
-        audit.record(admin, 'Ajo Payout Arranged',
-                     f"Arranged {txn.customer.full_name}'s {txn.product_name} payout: {naira(q.available)} saved, "
-                     f'{naira(q.service_charge)} service charge, {naira(wd.payout_amount)} to {wd.bank_name} '
-                     f'{wd.account_number}.', reference=wd.reference, status='info', agent_code=txn.customer.agent_code)
-        notify(txn.customer, 'Ajo payout on its way',
-               f'Your {txn.product_name} cycle is complete. {naira(wd.payout_amount)} ({naira(q.available)} saved, less '
-               f'the {naira(q.service_charge)} service charge) is being arranged for your {wd.bank_name} account.',
+        charge = f', {naira(q.service_charge)} service charge' if q.service_charge else ''
+        audit.record(admin, 'Ajo Withdrawal Arranged',
+                     f"Arranged a withdrawal from {txn.customer.full_name}'s {txn.product_name}: {naira(taken)} "
+                     f'of their savings{charge}, {naira(wd.payout_amount)} to {wd.bank_name} {wd.account_number}.',
+                     reference=wd.reference, status='info', agent_code=txn.customer.agent_code)
+        notify(txn.customer, 'Ajo withdrawal on its way',
+               f'{naira(wd.payout_amount)} from your {txn.product_name}'
+               + (f' ({naira(taken)} of your savings, less the {naira(q.service_charge)} service charge)'
+                  if q.service_charge else '')
+               + f' is being arranged for your {wd.bank_name} account.',
                Notification.Kind.WITHDRAWAL, link=customer_link(txn))
-        notify_admins('Ajo payout to approve',
-                      f'{admin.full_name} arranged {txn.customer.full_name}\'s Ajo payout of {naira(wd.payout_amount)} '
-                      f'({wd.reference}).', Notification.Kind.WITHDRAWAL, Notification.Type.WARNING,
-                      link=f'/admin/withdrawals/{wd.reference}', exclude=admin)
+        notify_admins('Ajo withdrawal to approve',
+                      f'{admin.full_name} arranged an Ajo withdrawal of {naira(wd.payout_amount)} for '
+                      f'{txn.customer.full_name} ({wd.reference}).', Notification.Kind.WITHDRAWAL,
+                      Notification.Type.WARNING, link=f'/admin/withdrawals/{wd.reference}', exclude=admin)
     return wd
 
 
@@ -348,18 +427,27 @@ def contribution_dict(c, today, admin=False):
     return data
 
 
-def statement(txn, contributions, payout):
+def withdrawal_dict(wd):
+    return {'reference': wd.reference, 'status': wd.status, 'amount': float(wd.amount),
+            'serviceCharge': float(wd.service_charge), 'payoutAmount': float(wd.payout_amount),
+            'createdAt': wd.created_at, 'paidAt': wd.paid_at, 'payoutReference': wd.payout_reference}
+
+
+def statement(txn, contributions, withdrawals):
     """Every movement on the plan in date order, with the running balance."""
     rows = [{'date': c.paid_at, 'description': f'Contribution {c.number}'
              + (' (cash)' if c.method == Contribution.Method.CASH else ''),
              'reference': c.reference, 'credit': float(c.amount), 'debit': 0}
             for c in contributions if c.status == Contribution.Status.PAID]
-    if payout is not None and payout.decided_at:
-        if payout.service_charge:
-            rows.append({'date': payout.decided_at, 'description': 'Service charge (one contribution)',
-                         'reference': payout.reference, 'credit': 0, 'debit': float(payout.service_charge)})
-        rows.append({'date': payout.decided_at, 'description': 'Payout to your bank account',
-                     'reference': payout.reference, 'credit': 0, 'debit': float(payout.payout_amount)})
+    for wd in withdrawals:
+        # The balance moves when a withdrawal is approved
+        if wd.status == Withdrawal.Status.PENDING or not wd.decided_at:
+            continue
+        if wd.service_charge:
+            rows.append({'date': wd.decided_at, 'description': 'Service charge',
+                         'reference': wd.reference, 'credit': 0, 'debit': float(wd.service_charge)})
+        rows.append({'date': wd.decided_at, 'description': 'Withdrawal to your bank account',
+                     'reference': wd.reference, 'credit': 0, 'debit': float(wd.payout_amount)})
     rows.sort(key=lambda r: r['date'])
     balance = 0.0
     for row in rows:
@@ -368,37 +456,50 @@ def statement(txn, contributions, payout):
     return rows
 
 
+def active_withdrawals(txn):
+    """The plan's withdrawals that weren't rejected or cancelled, oldest first."""
+    return sorted((w for w in txn.withdrawals.all() if w.status in ACTIVE_WITHDRAWALS),
+                  key=lambda w: (w.created_at, w.pk))
+
+
 def as_dict(txn, admin=False):
     today = timezone.localdate()
     contributions = list(txn.contributions.all())
-    total = sum((c.amount for c in contributions if c.status == Contribution.Status.PAID), Decimal(0))
-    charge = service_charge(txn, total)
-    payout = txn.withdrawals.exclude(status__in=('rejected', 'cancelled')).order_by('-created_at').first()
+    withdrawals = active_withdrawals(txn)
+    p = position(txn, contributions)
     unpaid = [c for c in contributions if c.status != Contribution.Status.PAID]
-    if payout is not None:
-        state = 'paid_out' if payout.status == 'paid' else 'payout_requested'
-    elif has_ended(txn, today):
-        state = 'ended'
-    else:
+    if not has_ended(txn, today):
         state = 'active'
+    elif p.net > 0 or not withdrawals:
+        state = 'ended'
+    elif any(w.status != Withdrawal.Status.PAID for w in withdrawals):
+        state = 'payout_requested'
+    else:
+        state = 'paid_out'
     return {
         'state': state,
         'frequency': txn.repayment_frequency,
         'contribution': float(txn.amount),
         'count': len(contributions),
         'paidCount': len(contributions) - len(unpaid),
-        'saved': float(total),
+        'saved': float(p.saved),
         # What saving every contribution would come to
         'target': float(txn.amount * len(contributions)),
-        'serviceCharge': float(charge),
-        'netPayout': float(total - charge),
+        # One contribution for each month saved in, and the part of it no withdrawal has settled yet
+        'serviceCharge': float(p.charge),
+        'chargeDue': float(p.charge_due),
+        'withdrawn': float(p.withdrawn),
+        'balance': float(p.balance),
+        # What can be asked for now, and what that would pay after the charge still owed
+        'available': float(p.available),
+        'netPayout': float(p.net),
         'cycleEnds': txn.end_date.isoformat() if txn.end_date else None,
         # Where a transfer goes, while the cycle is open (staff record it once it arrives)
         'paymentAccount': collection_account(txn) if state == 'active' else None,
         'nextContribution': contribution_dict(unpaid[0], today) if unpaid and state == 'active' else None,
-        'payout': {'reference': payout.reference, 'status': payout.status, 'amount': float(payout.amount),
-                   'serviceCharge': float(payout.service_charge), 'payoutAmount': float(payout.payout_amount),
-                   'paidAt': payout.paid_at, 'payoutReference': payout.payout_reference} if payout else None,
+        'withdrawals': [withdrawal_dict(w) for w in withdrawals],
+        # The latest of them
+        'payout': withdrawal_dict(withdrawals[-1]) if withdrawals else None,
         'contributions': [contribution_dict(c, today, admin) for c in contributions],
-        'statement': statement(txn, contributions, payout),
+        'statement': statement(txn, contributions, withdrawals),
     }
